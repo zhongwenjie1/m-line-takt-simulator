@@ -1,0 +1,78 @@
+name: Build M-Line Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+
+      - name: Upgrade pip/setuptools/wheel
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: Install runtime deps
+        run: |
+          if (Test-Path "ticket_export_app\requirements.txt") {
+            pip install -r ticket_export_app\requirements.txt
+          }
+          pip install PySide6 openpyxl pandas numpy xlsxwriter
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Syntax check
+        run: |
+          python -m py_compile ticket_export_app/main.py
+          python -m py_compile ticket_export_app/ui/export_ticket_window.py
+          python -m py_compile ticket_export_app/core/analysis.py
+          python -m py_compile ticket_export_app/core/tickets.py
+          python -m py_compile ticket_export_app/core/schedule_v2.py
+          python -m py_compile ticket_export_app/core/input_parser.py
+
+      - name: Build M-Line Windows EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onefile --windowed `
+            --name "M-Line混流节拍仿真系统_v2.9_win" `
+            --add-data "ticket_export_app/version.json;ticket_export_app" `
+            --add-data "ticket_export_app/docs/M-Line混流节拍仿真系统_使用说明_v2.9.md;docs" `
+            --add-data "ticket_export_app/docs/release_v2.9_result_risk_final.md;docs" `
+            ticket_export_app/main.py
+
+      - name: List dist (PowerShell)
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          if (Test-Path dist) {
+            Get-ChildItem -Path dist -Recurse |
+              Select-Object FullName, Length |
+              Format-Table -AutoSize
+          } else {
+            Write-Host "dist folder not found (nothing to list)"
+          }
+
+      - name: Prepare release package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release_package | Out-Null
+          Copy-Item "dist\M-Line混流节拍仿真系统_v2.9_win.exe" "release_package\M-Line混流节拍仿真系统_v2.9_win.exe"
+          Copy-Item "ticket_export_app\docs\M-Line混流节拍仿真系统_使用说明_v2.9.md" "release_package\M-Line混流节拍仿真系统_使用说明_v2.9.md"
+          Copy-Item "ticket_export_app\docs\release_v2.9_result_risk_final.md" "release_package\release_v2.9_result_risk_final.md"
+
+      - name: Upload Windows package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: M-Line_v2.9_windows_package
+          path: release_package
+          if-no-files-found: warn
