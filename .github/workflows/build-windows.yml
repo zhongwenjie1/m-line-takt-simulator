@@ -39,11 +39,22 @@ jobs:
           python -m py_compile ticket_export_app/core/schedule_v2.py
           python -m py_compile ticket_export_app/core/input_parser.py
 
+      - name: Import check
+        run: python -c "import sys; sys.path.insert(0, 'ticket_export_app'); import ui.export_ticket_window; import core.tickets; print('import check ok')"
+
       - name: Build M-Line Windows EXE
         shell: pwsh
         run: |
           pyinstaller --noconfirm --onefile --windowed `
             --name "M-Line混流节拍仿真系统_v2.9_win" `
+            --paths "ticket_export_app" `
+            --hidden-import "ui" `
+            --hidden-import "ui.export_ticket_window" `
+            --hidden-import "core" `
+            --hidden-import "core.analysis" `
+            --hidden-import "core.tickets" `
+            --hidden-import "core.schedule_v2" `
+            --hidden-import "core.input_parser" `
             --add-data "ticket_export_app/version.json;ticket_export_app" `
             --add-data "ticket_export_app/docs/M-Line混流节拍仿真系统_使用说明_v2.9.md;docs" `
             --add-data "ticket_export_app/docs/release_v2.9_result_risk_final.md;docs" `
