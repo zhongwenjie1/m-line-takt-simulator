@@ -207,8 +207,9 @@ def schedule(step_defs: List[Dict[str, Any]],
       launch_takt 未传或 <= 0 时，保持旧排程逻辑。
 
     v2-2：车型跳过岗位
-      当前车型在当前岗位的工时 <= 0 时，表示该车型跳过该岗位。
-      跳过岗位不占用资源、不产生等待、不写入 rows。
+      当前车型在当前岗位的工时 < 0 时，表示该车型跳过该岗位。
+      工时 = 0 时仍然经过该岗位，但不占用加工时间。
+      仅负工时岗位不占用资源、不产生等待、不写入 rows。
 
     v2-3B：设备数量与所属线别资源 key
       当前阶段根据 device_count / line_scope / group 生成 resource_key。
@@ -227,7 +228,7 @@ def schedule(step_defs: List[Dict[str, Any]],
 
     v2-4C：未来强制线别预判
       如果车辆后续存在需要进入 1号线 / 2号线的有效岗位，前置双线岗位会提前优先选择该线别。
-      工时 <= 0 的后续岗位视为该车型跳过，不构成强制线别约束。
+      工时 < 0 的后续岗位视为该车型跳过，不构成强制线别约束。
     """
     steps, zones, gate_buffers = _normalize_defs(step_defs)
     m = len(steps)
@@ -334,7 +335,7 @@ def schedule(step_defs: List[Dict[str, Any]],
         v2-4C：未来强制线别预判。
         如果当前车辆后续还有必须进入 1号线 / 2号线的岗位，
         则前置双线岗位应提前优先选择该线别。
-        工时 <= 0 的岗位视为该车型跳过，不构成强制约束。
+        工时 < 0 的岗位视为该车型跳过，不构成强制约束。
         """
         for future_st in all_steps[start_index:]:
             try:
@@ -342,7 +343,7 @@ def schedule(step_defs: List[Dict[str, Any]],
             except Exception:
                 future_dur = 0.0
 
-            if future_dur <= 0:
+            if future_dur < 0:
                 continue
 
             future_scope = str(future_st.get("line_scope", "") or "")
@@ -485,7 +486,7 @@ def schedule(step_defs: List[Dict[str, Any]],
                 next_duration = float(_pick_duration(next_step, car_type) or 0.0)
             except Exception:
                 next_duration = 0.0
-            if next_duration > 0:
+            if next_duration >= 0:
                 return next_index, next_step
         return None, None
 
@@ -542,9 +543,9 @@ def schedule(step_defs: List[Dict[str, Any]],
                 cur_duration = 0.0
 
             # v2-2：车型跳过岗位逻辑
-            # A/B/C 对应工时 <= 0 时，表示该车型不需要该岗位，直接跳过。
-            # 跳过岗位不占用资源、不产生等待、不写入 rows。
-            if cur_duration <= 0:
+            # A/B/C 对应工时 < 0 时，表示该车型不需要该岗位，直接跳过。
+            # 工时 = 0 表示该车型仍经过岗位，但不占用加工时间。
+            if cur_duration < 0:
                 heapq.heappush(cur_heap, (cur_ready, resource_line_no))
                 continue
 

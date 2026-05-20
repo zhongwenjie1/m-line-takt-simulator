@@ -10,6 +10,7 @@ app_dir = Path.cwd().resolve()
 project_root = app_dir.parent
 main_py = app_dir / "main.py"
 version_json = app_dir / "version.json"
+app_name = "M-Line混流节拍仿真系统_v2.9_mac"
 
 if not main_py.exists():
     raise FileNotFoundError(f"main.py not found: {main_py}")
@@ -56,21 +57,41 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
-    name="生产指示小工具",
+    exclude_binaries=True,
+    name=app_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name=app_name,
+)
+
+app = BUNDLE(
+    coll,
+    name=app_name + ".app",
+    icon=None,
+    bundle_identifier="com.zhongwenjie.mline.takt.simulator",
+    info_plist={
+        "CFBundleName": "M-Line混流节拍仿真系统",
+        "CFBundleDisplayName": "M-Line混流节拍仿真系统",
+        "CFBundleShortVersionString": "2.9",
+        "CFBundleVersion": "2.9",
+        "NSHighResolutionCapable": "True",
+    },
 )
