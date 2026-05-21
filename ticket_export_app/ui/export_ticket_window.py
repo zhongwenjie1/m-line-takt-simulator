@@ -4,7 +4,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QToolBar, QStatusBar, QMessageBox, QTableWidget,
     QTableWidgetItem, QSpinBox, QComboBox, QLineEdit, QColorDialog,
     QTabWidget, QFrame, QAbstractItemView, QHeaderView, QGraphicsScene, QGraphicsView, QProgressBar,
-    QPlainTextEdit
+    QScrollArea,
+    QPlainTextEdit, QTextBrowser
 )
 from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QColor, QPen, QBrush, QFont
@@ -97,7 +98,12 @@ class ExportTicketWindow(QMainWindow):
         page_multi_layout.addWidget(self.multi_tabs, 1)
 
         self.page_multi_input = QWidget(self.page_multi)
-        self.page_multi_result = QWidget(self.page_multi)
+        self.page_multi_result_scroll = QScrollArea(self.page_multi)
+        self.page_multi_result_scroll.setWidgetResizable(True)
+        self.page_multi_result_scroll.setFrameShape(QFrame.NoFrame)
+        self.page_multi_result_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.page_multi_result = QWidget(self.page_multi_result_scroll)
+        self.page_multi_result_scroll.setWidget(self.page_multi_result)
 
         input_layout = QVBoxLayout(self.page_multi_input)
         input_layout.setContentsMargins(0, 0, 0, 0)
@@ -109,7 +115,7 @@ class ExportTicketWindow(QMainWindow):
 
 
         self.multi_tabs.addTab(self.page_multi_input, "参数与岗位")
-        self.multi_tabs.addTab(self.page_multi_result, "分析与导出")
+        self.multi_tabs.addTab(self.page_multi_result_scroll, "分析与导出")
 
 
         def _make_block(title: str):
@@ -333,6 +339,7 @@ class ExportTicketWindow(QMainWindow):
         self.last_schedule_rows = []
         self.last_analysis = None
         self.last_max_finish = 0.0
+        self._last_model_result_summary = None
 
         self.lbl_vehicle_summary = QLabel("")
         self.lbl_vehicle_summary.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -349,6 +356,22 @@ class ExportTicketWindow(QMainWindow):
             "font-size: 13px;"
             "line-height: 1.5;"
         )
+
+        self.btn_model_result_explanation = QPushButton("结果说明", self.lbl_vehicle_summary)
+        self.btn_model_result_explanation.setFixedHeight(24)
+        self.btn_model_result_explanation.setMinimumWidth(80)
+        self.btn_model_result_explanation.setStyleSheet(
+            "QPushButton {"
+            "background:#ffffff;"
+            "border:1px solid #cbd5e1;"
+            "border-radius:6px;"
+            "padding:0 10px;"
+            "color:#334155;"
+            "font-size:12px;"
+            "}"
+            "QPushButton:hover { background:#f8fafc; }"
+        )
+        self.btn_model_result_explanation.raise_()
 
         vehicle_summary_layout.addWidget(self.lbl_vehicle_summary, 1)
 
@@ -584,9 +607,10 @@ class ExportTicketWindow(QMainWindow):
         self.btn_del_row.clicked.connect(self.del_row)
         self.btn_fill_sample.clicked.connect(self.fill_sample)
         self.cmb_launch_mode.currentIndexChanged.connect(self._update_mode_ui)
-        self.btn_go_result_page.clicked.connect(lambda: self.multi_tabs.setCurrentWidget(self.page_multi_result))
+        self.btn_go_result_page.clicked.connect(lambda: self.multi_tabs.setCurrentWidget(self.page_multi_result_scroll))
         self.btn_analyze.clicked.connect(self.do_analyze)
         self.btn_export.clicked.connect(self.do_export)
+        self.btn_model_result_explanation.clicked.connect(self._show_model_result_explanation_dialog)
         self.act_help.triggered.connect(self.show_help)
         self.btn_sim_play.clicked.connect(self._start_simulation)
         self.btn_sim_pause.clicked.connect(self._pause_simulation)
@@ -2521,12 +2545,15 @@ class ExportTicketWindow(QMainWindow):
             "total_blocking_so_far": total_blocking_so_far,
             "blocking_hint": blocking_hint,
             "current_time": current,
+            "all_vehicles": all_vehicles,
+            "target_scope_vehicles": target_scope_vehicles,
         }
 
     def _update_realtime_model_result(self):
         if not getattr(self, "last_schedule_rows", None):
             if hasattr(self, "lbl_realtime_takt"):
                 self.lbl_realtime_takt.setText("实时节拍：-")
+            self._last_model_result_summary = None
             return
         realtime = self._build_realtime_model_result(float(getattr(self, "sim_time", 0.0) or 0.0))
         if hasattr(self, "lbl_realtime_takt"):
@@ -2712,6 +2739,60 @@ class ExportTicketWindow(QMainWindow):
             risk_parts.append(f"整体节拍 {overall_takt_text}/{target_takt_text}")
         risk_hint_text = "｜".join(risk_parts) if risk_parts else "暂无明显风险"
 
+        target_scope_vehicles = list(realtime.get("target_scope_vehicles", []) or [])
+        all_vehicles = list(realtime.get("all_vehicles", []) or [])
+        last_output_vehicle = target_scope_vehicles[-1] if target_scope_vehicles else None
+        next_output_vehicle = None
+        if last_output_vehicle is not None:
+            try:
+                last_out_value = float(last_output_vehicle.get("car_out", 0.0) or 0.0)
+            except Exception:
+                last_out_value = 0.0
+            for item in all_vehicles:
+                try:
+                    candidate_out = float(item.get("car_out", 0.0) or 0.0)
+                except Exception:
+                    candidate_out = 0.0
+                if candidate_out > last_out_value + 1e-9:
+                    next_output_vehicle = item
+                    break
+
+        analysis_time_seconds = summary.get("analysis_time_seconds")
+        try:
+            analysis_time_seconds = float(analysis_time_seconds or 0.0)
+        except Exception:
+            analysis_time_seconds = 0.0
+        analysis_time_minutes = 0.0
+        if analysis_time_seconds > 0:
+            analysis_time_minutes = analysis_time_seconds / 60.0
+        elif hasattr(self, "spn_total_cars"):
+            try:
+                analysis_time_minutes = float(self.spn_total_cars.value() or 0.0)
+                analysis_time_seconds = analysis_time_minutes * 60.0
+            except Exception:
+                analysis_time_minutes = 0.0
+                analysis_time_seconds = 0.0
+
+        self._last_model_result_summary = {
+            "analysis_time_minutes": analysis_time_minutes,
+            "analysis_time_seconds": analysis_time_seconds,
+            "output_count": output_vehicle_count,
+            "qualified_count": qualified_vehicle_count,
+            "qualified_rate": qualified_rate,
+            "qualified_rate_percent": None if qualified_rate is None else qualified_rate * 100.0,
+            "target_takt": target_takt_value,
+            "first_out": target_scope_vehicles[0].get("car_out") if target_scope_vehicles else None,
+            "last_out": target_scope_vehicles[-1].get("car_out") if target_scope_vehicles else None,
+            "last_output_car_no": last_output_vehicle.get("car_key") if last_output_vehicle else None,
+            "last_output_car_out": last_output_vehicle.get("car_out") if last_output_vehicle else None,
+            "next_car_no": next_output_vehicle.get("car_key") if next_output_vehicle else None,
+            "next_car_out": next_output_vehicle.get("car_out") if next_output_vehicle else None,
+            "overall_takt": overall_takt,
+            "total_block_wait": realtime.get("total_blocking_so_far", 0.0),
+            "risk_text": risk_hint_text or "暂无明显风险",
+            "blocking_station_text": blocking_hint,
+        }
+
         model_cards = [
             _metric_card("下线车辆", f"{output_vehicle_count}台"),
             _metric_card("达标车辆", f"{qualified_vehicle_count}/{denominator_vehicle_count}"),
@@ -2720,7 +2801,7 @@ class ExportTicketWindow(QMainWindow):
             _metric_card("累计阻塞", f"{blocking_so_far}s"),
         ]
         right_html = (
-            "<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;'>模型结果</div>"
+            "<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;padding-right:92px;'>模型结果</div>"
             "<div style='margin-bottom:2px;'>"
             "<table width='100%' cellspacing='2' cellpadding='0' style='width:100%;'>"
             "<tr>"
@@ -2744,6 +2825,193 @@ class ExportTicketWindow(QMainWindow):
             "</table>"
         )
         self.lbl_vehicle_summary.setText(html)
+        self._position_model_result_explanation_button()
+
+    def _position_model_result_explanation_button(self):
+        if not hasattr(self, "btn_model_result_explanation") or not hasattr(self, "lbl_vehicle_summary"):
+            return
+        button = self.btn_model_result_explanation
+        label = self.lbl_vehicle_summary
+        margin = 14
+        x = max(margin, label.width() - button.width() - margin)
+        y = 6
+        button.move(x, y)
+        button.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_model_result_explanation_button()
+
+    def _get_model_result_explanation_anchor_widget(self):
+        if hasattr(self, "lbl_vehicle_summary"):
+            return self.lbl_vehicle_summary
+        return self
+
+    def _build_model_result_explanation_text(self, summary):
+        if not summary:
+            return ""
+
+        def _fmt_num(value, default="—"):
+            if value is None:
+                return default
+            return self._fmt_analysis_num(value)
+
+        def _fmt_minutes(value):
+            try:
+                minutes = float(value or 0.0)
+            except Exception:
+                return "0"
+            if abs(minutes - round(minutes)) < 1e-9:
+                return str(int(round(minutes)))
+            return f"{minutes:.1f}"
+
+        output_count = int(summary.get("output_count", 0) or 0)
+        qualified_count = int(summary.get("qualified_count", 0) or 0)
+        qualified_rate_percent = summary.get("qualified_rate_percent")
+        target_takt = summary.get("target_takt", 0.0)
+        first_out = summary.get("first_out")
+        last_out = summary.get("last_out")
+        last_output_car_no = summary.get("last_output_car_no")
+        last_output_car_out = summary.get("last_output_car_out")
+        overall_takt = summary.get("overall_takt")
+        total_block_wait = summary.get("total_block_wait", 0.0)
+        risk_text = str(summary.get("risk_text", "") or "暂无明显风险")
+        analysis_time_minutes = summary.get("analysis_time_minutes", 0.0)
+        analysis_time_seconds = summary.get("analysis_time_seconds", 0.0)
+
+        if output_count <= 0:
+            output_calc = "当前分析时间内暂无车辆完成下线，所以当前下线车辆为 0台。"
+        elif last_output_car_no is not None and last_output_car_out is not None and analysis_time_seconds:
+            output_calc = (
+                f"第{escape(str(last_output_car_no))}台车辆 OUT 时间 {_fmt_num(last_output_car_out)}s ≤ "
+                f"分析时间 {_fmt_minutes(analysis_time_minutes)}分钟（{_fmt_num(analysis_time_seconds)}s），"
+                f"所以当前下线车辆为 {output_count}台。"
+            )
+        else:
+            output_calc = f"当前分析时间范围内共统计到 {output_count}台已下线车辆。"
+
+        if output_count <= 0:
+            qualified_calc = "当前暂无下线车辆，因此达标车辆暂显示为 0/0。"
+        else:
+            qualified_calc = (
+                f"本次下线车辆 {output_count}台，其中 {qualified_count}台满足工位能力节拍要求，"
+                f"所以达标车辆为 {qualified_count}/{output_count}。"
+            )
+
+        if output_count <= 0 or qualified_rate_percent is None:
+            rate_calc = "当前暂无有效下线车辆，因此达标率暂显示为 —。"
+        else:
+            rate_calc = f"{qualified_count} ÷ {output_count} × 100% = {qualified_rate_percent:.1f}%。"
+
+        if output_count < 2 or first_out is None or last_out is None or overall_takt is None:
+            overall_calc = "当前下线车辆不足 2台，无法计算 OUT 平均间隔，所以整体节拍暂显示为 -。"
+        else:
+            overall_calc = (
+                f"（{_fmt_num(last_out)} - {_fmt_num(first_out)}）÷（{output_count} - 1）≈ "
+                f"{_fmt_num(overall_takt)}s/台；目标节拍为 {_fmt_num(target_takt)}s/台，"
+                f"所以整体节拍显示为 {_fmt_num(overall_takt)}/{_fmt_num(target_takt)}。"
+            )
+
+        block_calc = f"本次累计 block_wait = {_fmt_num(total_block_wait)}s，所以累计阻塞为 {_fmt_num(total_block_wait)}s。"
+        risk_calc = f"当前风险提示显示为：{escape(risk_text)}。"
+
+        return f"""
+<div style="font-size:13px; line-height:1.3; color:#0f172a;">
+  <div style="font-size:16px; font-weight:700; margin-bottom:8px;">模型结果说明</div>
+  <div style="margin-bottom:10px; color:#334155;">
+    以下内容用于解释当前模型结果的计算来源，帮助理解当前排程表现。
+  </div>
+
+  <div style="margin-top:8px;"><b>1. 下线车辆</b></div>
+  <div>表示：在设定分析时间内，已经完成最后一道工序并下线的车辆数量。</div>
+  <div>计算口径：OUT 时间 ≤ 分析时间。</div>
+  <div>本次计算：{output_calc}</div>
+
+  <div style="margin-top:8px;"><b>2. 达标车辆</b></div>
+  <div>表示：下线车辆中，经过的所有有效工位，其工位能力节拍均不超过目标节拍的车辆数量。</div>
+  <div>计算口径：工位能力节拍 = 当前车型该工位工时 ÷ 该工位有效设备数。</div>
+  <div>补充说明：工时为 0 的经过节点不参与工位能力超节拍判断。</div>
+  <div>本次计算：{qualified_calc}</div>
+
+  <div style="margin-top:8px;"><b>3. 达标率</b></div>
+  <div>表示：达标车辆在下线车辆中的占比。</div>
+  <div>计算口径：达标率 = 达标车辆 ÷ 下线车辆 × 100%。</div>
+  <div>本次计算：{rate_calc}</div>
+
+  <div style="margin-top:8px;"><b>4. 整体节拍</b></div>
+  <div>表示：已下线车辆在当前分析时间内的整体下线节奏。</div>
+  <div>计算口径：整体节拍 =（最后一台 OUT 时间 - 第一台 OUT 时间）÷（下线车辆数 - 1）。</div>
+  <div>本次计算：{overall_calc}</div>
+
+  <div style="margin-top:8px;"><b>5. 累计阻塞</b></div>
+  <div>表示：车辆在工位完成后，由于下游暂时不可接收而产生的等待时间累计。</div>
+  <div>计算口径：累计所有车辆在各工位上的 block_wait。</div>
+  <div>本次计算：{block_calc}</div>
+
+  <div style="margin-top:8px;"><b>6. 风险提示</b></div>
+  <div>表示：对当前模型结果中的主要关注点进行提示，包括工位能力超节拍、阻塞工程和整体节拍风险。</div>
+  <div>计算口径：根据工位能力节拍、阻塞工程和整体节拍风险生成提示。</div>
+  <div>本次计算：{risk_calc}</div>
+
+  <div style="margin-top:10px; color:#475569;">
+    说明：以上内容用于帮助理解当前模型结果，不代表最终业务判定。
+  </div>
+</div>
+""".strip()
+
+    def _show_model_result_explanation_dialog(self):
+        summary = getattr(self, "_last_model_result_summary", None)
+        if not summary:
+            QMessageBox.information(self, "提示", "请先完成一次分析，再查看结果说明。")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("模型结果说明")
+        dialog.resize(760, 560)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        browser = QTextBrowser(dialog)
+        browser.setReadOnly(True)
+        browser.setOpenExternalLinks(False)
+        browser.setStyleSheet(
+            "QTextBrowser {"
+            "background:#ffffff;"
+            "border:1px solid #dbe3ef;"
+            "border-radius:8px;"
+            "padding:8px;"
+            "font-size:12px;"
+            "}"
+        )
+        browser.setHtml(self._build_model_result_explanation_text(summary))
+        layout.addWidget(browser, 1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        btn_close = QPushButton("关闭", dialog)
+        btn_close.clicked.connect(dialog.accept)
+        button_row.addWidget(btn_close)
+        layout.addLayout(button_row)
+
+        anchor = self._get_model_result_explanation_anchor_widget()
+        if anchor is not None:
+            global_pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
+            x = global_pos.x()
+            y = global_pos.y() + 8
+            screen = self.screen().availableGeometry() if self.screen() else None
+            parent_geo = self.frameGeometry()
+            if screen is not None:
+                if x + dialog.width() > screen.right() - 12:
+                    x = max(screen.left() + 12, screen.right() - dialog.width() - 12)
+                if y + dialog.height() > screen.bottom() - 12:
+                    x = max(screen.left() + 12, min(parent_geo.center().x() - dialog.width() // 2, screen.right() - dialog.width() - 12))
+                    y = max(screen.top() + 12, min(parent_geo.center().y() - dialog.height() // 2, screen.bottom() - dialog.height() - 12))
+            dialog.move(x, y)
+
+        dialog.exec()
+
     def _active_sim_rows(self):
         """返回当前仿真时间正在加工的排程段。"""
         rows = getattr(self, "last_schedule_rows", []) or []

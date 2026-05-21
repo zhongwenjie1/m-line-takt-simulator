@@ -208,7 +208,7 @@ def schedule(step_defs: List[Dict[str, Any]],
 
     v2-2：车型跳过岗位
       当前车型在当前岗位的工时 < 0 时，表示该车型跳过该岗位。
-      工时 = 0 时仍然经过该岗位，但不占用加工时间。
+      工时 = 0 时仍然经过该岗位，但不占用加工时间，也不占用当前工位资源。
       仅负工时岗位不占用资源、不产生等待、不写入 rows。
 
     v2-3B：设备数量与所属线别资源 key
@@ -228,7 +228,7 @@ def schedule(step_defs: List[Dict[str, Any]],
 
     v2-4C：未来强制线别预判
       如果车辆后续存在需要进入 1号线 / 2号线的有效岗位，前置双线岗位会提前优先选择该线别。
-      工时 < 0 的后续岗位视为该车型跳过，不构成强制线别约束。
+      只有工时 > 0 的后续岗位才构成强制线别约束。
     """
     steps, zones, gate_buffers = _normalize_defs(step_defs)
     m = len(steps)
@@ -335,7 +335,7 @@ def schedule(step_defs: List[Dict[str, Any]],
         v2-4C：未来强制线别预判。
         如果当前车辆后续还有必须进入 1号线 / 2号线的岗位，
         则前置双线岗位应提前优先选择该线别。
-        工时 < 0 的岗位视为该车型跳过，不构成强制约束。
+        只有工时 > 0 的岗位才构成强制约束。
         """
         for future_st in all_steps[start_index:]:
             try:
@@ -343,7 +343,7 @@ def schedule(step_defs: List[Dict[str, Any]],
             except Exception:
                 future_dur = 0.0
 
-            if future_dur < 0:
+            if future_dur <= 0:
                 continue
 
             future_scope = str(future_st.get("line_scope", "") or "")
@@ -486,9 +486,30 @@ def schedule(step_defs: List[Dict[str, Any]],
                 next_duration = float(_pick_duration(next_step, car_type) or 0.0)
             except Exception:
                 next_duration = 0.0
-            if next_duration >= 0:
+            if next_duration > 0:
                 return next_index, next_step
         return None, None
+
+    def _find_next_active_step(
+        all_steps: List[Dict[str, Any]],
+        current_index: int,
+        car_type: str,
+    ) -> Tuple[Optional[int], Optional[Dict[str, Any]], float]:
+        """
+        返回后续第一个“未跳过”的节点：
+        - duration < 0：跳过
+        - duration = 0：pass-through 节点
+        - duration > 0：真实作业节点
+        """
+        for next_index in range(current_index + 1, len(all_steps)):
+            next_step = all_steps[next_index]
+            try:
+                next_duration = float(_pick_duration(next_step, car_type) or 0.0)
+            except Exception:
+                next_duration = 0.0
+            if next_duration >= 0:
+                return next_index, next_step, next_duration
+        return None, None, -1.0
 
     for car, car_type in enumerate(vehicle_seq, start=1):
         theory_launch_time = (car - 1) * launch_takt_value if launch_takt_value > 0 else 0.0
@@ -498,44 +519,6 @@ def schedule(step_defs: List[Dict[str, Any]],
         car_gate_zones: set[str] = set()
 
         for j, st in enumerate(steps):
-            # ---- 计算本步开始时间：受上一步 depart、本步服务器空闲约束 ----
-            cur_key = str(st.get("resource_key", "") or "")
-            cur_heap = resource_heaps[cur_key]
-            upcoming_forced_line = _upcoming_forced_line(steps, j + 1, car_type)
-            cur_ready, resource_line_no = _pop_resource_slot(
-                cur_heap,
-                st,
-                current_line_no,
-                upcoming_forced_line,
-            )
-            selected_line_no = _actual_line_no(
-                st,
-                resource_line_no,
-                current_line_no,
-                upcoming_forced_line,
-            )
-            start = max(cur_ready, prev_depart)
-
-            # ---- 闸门缓冲约束（在 start 阶段判断）：允许“闸门→区域入口”链路上最多 gate_buffer 辆 ----
-            gz = st.get("gate_zone_id", "")
-            if gz:
-                car_gate_zones.add(gz)
-                # 取得该 gate_zone 的缓冲与堆
-                gb = max(1, int(gate_buffers.get(gz, 2)))
-                heap = pre_heap.setdefault(gz, [])
-
-                # 移除所有“进入 zone 的时刻 <= start”的条目（这些车在 start 时刻已进入 zone，不再占用缓冲）
-                while heap and heap[0] <= start:
-                    heapq.heappop(heap)
-
-                # 若缓冲已满（heap 大小 >= gb），则把 start 推迟到“最早一辆进入 zone 的时刻”
-                # 推迟后再次清理（可能一次就够，也可能要多次）
-                while len(heap) >= gb:
-                    start = max(start, heap[0])
-                    while heap and heap[0] <= start:
-                        heapq.heappop(heap)
-
-            # ---- 服务结束 ----
             cur_duration = _pick_duration(st, car_type)
             try:
                 cur_duration = float(cur_duration or 0.0)
@@ -544,37 +527,104 @@ def schedule(step_defs: List[Dict[str, Any]],
 
             # v2-2：车型跳过岗位逻辑
             # A/B/C 对应工时 < 0 时，表示该车型不需要该岗位，直接跳过。
-            # 工时 = 0 表示该车型仍经过岗位，但不占用加工时间。
+            # 工时 = 0 表示该车型仍经过岗位，但不占用加工时间，也不占用资源。
             if cur_duration < 0:
-                heapq.heappush(cur_heap, (cur_ready, resource_line_no))
                 continue
+
+            is_zero_duration = abs(cur_duration) <= 1e-9
+
+            # ---- 计算本步开始时间：0 工时只继承车辆流转时间；>0 工时仍受当前工位资源约束 ----
+            cur_key = str(st.get("resource_key", "") or "")
+            cur_heap = resource_heaps[cur_key]
+            cur_ready = prev_depart
+            resource_line_no = current_line_no
+            selected_line_no = current_line_no
+
+            if not is_zero_duration:
+                upcoming_forced_line = _upcoming_forced_line(steps, j + 1, car_type)
+                cur_ready, resource_line_no = _pop_resource_slot(
+                    cur_heap,
+                    st,
+                    current_line_no,
+                    upcoming_forced_line,
+                )
+                selected_line_no = _actual_line_no(
+                    st,
+                    resource_line_no,
+                    current_line_no,
+                    upcoming_forced_line,
+                )
+
+            start = max(cur_ready, prev_depart)
+
+            # ---- 闸门缓冲约束（在 start 阶段判断）：允许“闸门→区域入口”链路上最多 gate_buffer 辆 ----
+            gz = st.get("gate_zone_id", "")
+            if gz:
+                car_gate_zones.add(gz)
+                gb = max(1, int(gate_buffers.get(gz, 2)))
+                heap = pre_heap.setdefault(gz, [])
+
+                while heap and heap[0] <= start:
+                    heapq.heappop(heap)
+
+                while len(heap) >= gb:
+                    start = max(start, heap[0])
+                    while heap and heap[0] <= start:
+                        heapq.heappop(heap)
 
             svc_finish = start + cur_duration
 
             # ---- depart 受“下步可接收（服务器释放 + zone 容量）”约束 ----
-            next_idx, next_st = _find_next_effective_step(steps, j, car_type)
-            if next_st is not None and next_idx is not None:
-                next_key = str(next_st.get("resource_key", "") or "")
-                next_heap = resource_heaps[next_key]
-                next_upcoming_forced_line = _upcoming_forced_line(steps, next_idx + 1, car_type)
-                next_ready = _peek_resource_ready(
-                    next_heap,
-                    next_st,
-                    selected_line_no,
-                    next_upcoming_forced_line,
-                )
+            # 0 工时 segment 只是流转节点，不占当前资源，也不在该节点等待下步资源。
+            if is_zero_duration:
+                next_idx, next_st = _find_next_effective_step(steps, j, car_type)
+                if next_st is not None and next_idx is not None:
+                    next_key = str(next_st.get("resource_key", "") or "")
+                    next_heap = resource_heaps[next_key]
+                    next_upcoming_forced_line = _upcoming_forced_line(steps, next_idx + 1, car_type)
+                    next_ready = _peek_resource_ready(
+                        next_heap,
+                        next_st,
+                        selected_line_no,
+                        next_upcoming_forced_line,
+                    )
 
-                # 若“下步”是某 Zone 的入口，还得等该 Zone 出现名额
-                if is_zone_entry(next_idx):
-                    nzid = steps[next_idx]["zone_id"]
-                    nheap = zone_heaps[nzid]
-                    next_ready = max(next_ready, nheap[0] if nheap else 0.0)
+                    if is_zone_entry(next_idx):
+                        nzid = steps[next_idx]["zone_id"]
+                        nheap = zone_heaps[nzid]
+                        next_ready = max(next_ready, nheap[0] if nheap else 0.0)
 
-                # 注：闸门缓冲只在 start 阶段处理，不再额外卡 depart
-
-                depart = max(svc_finish, next_ready)
+                    depart = max(svc_finish, next_ready)
+                else:
+                    depart = svc_finish
             else:
-                depart = svc_finish
+                next_active_idx, next_active_st, next_active_duration = _find_next_active_step(steps, j, car_type)
+                if next_active_st is not None and next_active_idx is not None and next_active_duration <= 0:
+                    # 当前步后面紧跟 0 工时 pass-through 节点。
+                    # 车辆可以先从当前作业工位释放到 pass-through 节点，
+                    # 下游真正不可接收时，应把等待挂在该 0 工时节点，而不是回传到当前工位。
+                    depart = svc_finish
+                else:
+                    next_idx, next_st = _find_next_effective_step(steps, j, car_type)
+                    if next_st is not None and next_idx is not None:
+                        next_key = str(next_st.get("resource_key", "") or "")
+                        next_heap = resource_heaps[next_key]
+                        next_upcoming_forced_line = _upcoming_forced_line(steps, next_idx + 1, car_type)
+                        next_ready = _peek_resource_ready(
+                            next_heap,
+                            next_st,
+                            selected_line_no,
+                            next_upcoming_forced_line,
+                        )
+
+                        if is_zone_entry(next_idx):
+                            nzid = steps[next_idx]["zone_id"]
+                            nheap = zone_heaps[nzid]
+                            next_ready = max(next_ready, nheap[0] if nheap else 0.0)
+
+                        depart = max(svc_finish, next_ready)
+                    else:
+                        depart = svc_finish
 
             block_wait = max(0.0, depart - svc_finish)
 
@@ -621,9 +671,11 @@ def schedule(step_defs: List[Dict[str, Any]],
                 heapq.heappush(heap, depart)
 
             # ---- 更新状态，进入下一步 ----
-            heapq.heappush(cur_heap, (depart, resource_line_no))
+            if not is_zero_duration:
+                heapq.heappush(cur_heap, (depart, resource_line_no))
             prev_depart = depart
-            current_line_no = selected_line_no
+            if not is_zero_duration and selected_line_no:
+                current_line_no = selected_line_no
             max_time = max(max_time, depart)
 
     return rows, max_time
