@@ -1,0 +1,221 @@
+{
+  "analysis_seconds": 69000.0,
+  "baseline": "v2.9-before-improvement-rounds",
+  "baseline_assertions": "passed",
+  "evidence_verification": {
+    "quantity": {
+      "differences": 0,
+      "evidence_records": 1148,
+      "examples": []
+    },
+    "ratio": {
+      "differences": 0,
+      "evidence_records": 1240,
+      "examples": []
+    }
+  },
+  "quantity": {
+    "bottleneck_wait_status": "not_implemented_in_current_baseline",
+    "final_vehicle": {
+      "actual_launch": 74422.5,
+      "car": 1148,
+      "first_out_plus_gap_sum": 75885.5,
+      "flow": 1463.0,
+      "launch_plus_flow": 75885.5,
+      "out": 75885.5,
+      "type": "C"
+    },
+    "first_a_position": 186,
+    "first_out": 1423.5,
+    "full_first_out": 1423.5,
+    "full_last_car": 1148,
+    "full_last_out": 75885.5,
+    "full_raw_block_wait": 260263.5,
+    "generated": 1148,
+    "last_out": 68952.5,
+    "last_scope_car": 1036,
+    "max_consecutive": 5,
+    "out_gap_negative_compensation": -3808.0,
+    "out_gap_net_delta": 7936.0,
+    "out_gap_over_target_count": 570,
+    "out_gap_positive_excess": 11744.0,
+    "out_gap_sum": 74462.0,
+    "overall_takt": 65.24541062801933,
+    "processing_capacity_violations": 0,
+    "qualified": 239,
+    "raw_block_stations_in_window": {
+      "ADAS": 7706.5,
+      "ARHUD+慢充": 12185.5,
+      "EG漏液/底盘漏液": 605.0,
+      "L2++": 73014.5,
+      "四轮定位上、下": 50805.0,
+      "小跑道": 8857.0,
+      "气囊安装+绝缘": 408.0,
+      "电检1": 3090.0,
+      "电检2": 8742.0,
+      "空气悬挂+快充": 10202.0,
+      "转毂": 49725.0,
+      "集约": 9923.0
+    },
+    "raw_block_wait_in_window": 235263.5,
+    "resource_checks": {
+      "occupancy_overlap": 0,
+      "processing_overlap": 0,
+      "same_resource_overtake": 0
+    },
+    "sequence_first_30": "CCCCCBCCCCCBCCCCCBCCCCCBCCCCCB",
+    "station_slot_occupancy": {
+      "cars": [
+        {
+          "car": 372,
+          "state": "zero_wait"
+        },
+        {
+          "car": 375,
+          "state": "zero_wait"
+        },
+        {
+          "car": 377,
+          "state": "processing_or_blocked"
+        }
+      ],
+      "line": "2号线",
+      "maximum": 3,
+      "station": "气囊安装+绝缘",
+      "time": 27791.5
+    },
+    "station_slot_overlaps": {
+      "maximum_overlap": {
+        "cars": [
+          372,
+          375
+        ],
+        "line": "2号线",
+        "seconds": 142.5,
+        "station": "气囊安装+绝缘"
+      },
+      "pair_count": 1624,
+      "pair_types": {
+        "process->zero": 536,
+        "zero->process": 1086,
+        "zero->zero": 2
+      },
+      "processing_cars_entering_occupied_zero_node": 565
+    },
+    "vehicle_counts": {
+      "A": 276,
+      "B": 306,
+      "C": 566
+    },
+    "within_window": 1036,
+    "zero_node_occupancy": {
+      "cars": [
+        366,
+        372
+      ],
+      "line": "2号线",
+      "maximum": 2,
+      "station": "气囊安装+绝缘",
+      "time": 27504.5
+    }
+  },
+  "ratio": {
+    "bottleneck_wait_status": "not_implemented_in_current_baseline",
+    "final_vehicle": {
+      "actual_launch": 80024.0,
+      "car": 1240,
+      "first_out_plus_gap_sum": 81543.5,
+      "flow": 1519.5,
+      "launch_plus_flow": 81543.5,
+      "out": 81543.5,
+      "type": "C"
+    },
+    "first_a_position": 1,
+    "first_out": 861.0,
+    "full_first_out": 861.0,
+    "full_last_car": 1240,
+    "full_last_out": 81543.5,
+    "full_raw_block_wait": 285937.0,
+    "generated": 1240,
+    "last_out": 68987.5,
+    "last_scope_car": 1046,
+    "max_consecutive": 5,
+    "out_gap_negative_compensation": -5718.0,
+    "out_gap_net_delta": 8820.5,
+    "out_gap_over_target_count": 469,
+    "out_gap_positive_excess": 14538.5,
+    "out_gap_sum": 80682.5,
+    "overall_takt": 65.19282296650718,
+    "processing_capacity_violations": 0,
+    "qualified": 210,
+    "raw_block_stations_in_window": {
+      "ADAS": 8836.0,
+      "ARHUD+慢充": 16183.5,
+      "EG漏液/底盘漏液": 525.0,
+      "L2++": 65133.5,
+      "四轮定位上、下": 46011.0,
+      "小跑道": 18238.0,
+      "气囊安装+绝缘": 156.0,
+      "电检2": 7076.0,
+      "空气悬挂+快充": 11981.0,
+      "转毂": 60315.5,
+      "集约": 9351.5
+    },
+    "raw_block_wait_in_window": 243807.0,
+    "resource_checks": {
+      "occupancy_overlap": 0,
+      "processing_overlap": 0,
+      "same_resource_overtake": 0
+    },
+    "sequence_first_30": "AABBBCCCCCAABBBCCCCCAABBBCCCCC",
+    "station_slot_occupancy": {
+      "cars": [
+        {
+          "car": 9,
+          "state": "processing_or_blocked"
+        },
+        {
+          "car": 11,
+          "state": "zero_wait"
+        }
+      ],
+      "line": "1号线",
+      "maximum": 2,
+      "station": "空气悬挂+快充",
+      "time": 741.0
+    },
+    "station_slot_overlaps": {
+      "maximum_overlap": {
+        "cars": [
+          11,
+          13
+        ],
+        "line": "1号线",
+        "seconds": 116.0,
+        "station": "气囊安装+绝缘"
+      },
+      "pair_count": 1357,
+      "pair_types": {
+        "process->zero": 371,
+        "zero->process": 986
+      },
+      "processing_cars_entering_occupied_zero_node": 615
+    },
+    "vehicle_counts": {
+      "A": 248,
+      "B": 372,
+      "C": 620
+    },
+    "within_window": 1046,
+    "zero_node_occupancy": {
+      "cars": [
+        11
+      ],
+      "line": "1号线",
+      "maximum": 1,
+      "station": "空气悬挂+快充",
+      "time": 741.0
+    }
+  },
+  "target_takt": 58.0
+}
