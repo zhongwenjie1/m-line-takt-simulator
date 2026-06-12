@@ -1,0 +1,190 @@
+{
+  "assertions": "passed",
+  "minimal_backpressure": {
+    "car4_first_station_start": 130.0,
+    "chain_checks": {
+      "finish_errors": 0,
+      "gap": 0,
+      "overlap": 0,
+      "wait_errors": 0
+    },
+    "station_slot_overlaps": {
+      "maximum_overlap": {
+        "cars": [],
+        "line": "",
+        "seconds": 0.0,
+        "station": ""
+      },
+      "pair_count": 0,
+      "pair_types": {},
+      "processing_cars_entering_occupied_zero_node": 0
+    }
+  },
+  "quantity": {
+    "chain_checks": {
+      "finish_errors": 0,
+      "gap": 0,
+      "overlap": 0,
+      "wait_errors": 0
+    },
+    "delta_from_round0": {
+      "first_out": 0.0,
+      "full_last_out": 246.0,
+      "full_raw_block_wait": -7158.0,
+      "last_out": -13.5,
+      "overall_takt": 0.24004039040937641,
+      "qualified": -1,
+      "raw_block_wait_in_window": -7385.0,
+      "within_window": -4
+    },
+    "first_out": 1423.5,
+    "full_last_out": 76131.5,
+    "full_raw_block_wait": 253105.5,
+    "last_out": 68939.0,
+    "overall_takt": 65.4854510184287,
+    "processing_capacity_violations": 0,
+    "qualified": 238,
+    "raw_block_wait_in_window": 227878.5,
+    "segment_count": 17220,
+    "station_slot_occupancy": {
+      "cars": [
+        {
+          "car": 1,
+          "state": "processing_or_blocked"
+        }
+      ],
+      "line": "双线共用",
+      "maximum": 1,
+      "station": "引取",
+      "time": 0.0
+    },
+    "station_slot_overlaps": {
+      "maximum_overlap": {
+        "cars": [],
+        "line": "",
+        "seconds": 0.0,
+        "station": ""
+      },
+      "pair_count": 0,
+      "pair_types": {},
+      "processing_cars_entering_occupied_zero_node": 0
+    },
+    "within_window": 1032,
+    "zero_duration_segment_count": 2528
+  },
+  "ratio": {
+    "chain_checks": {
+      "finish_errors": 0,
+      "gap": 0,
+      "overlap": 0,
+      "wait_errors": 0
+    },
+    "delta_from_round0": {
+      "first_out": 0.0,
+      "full_last_out": 1764.5,
+      "full_raw_block_wait": -24982.5,
+      "last_out": 9.0,
+      "overall_takt": 1.4107938467870582,
+      "qualified": -4,
+      "raw_block_wait_in_window": -26179.0,
+      "within_window": -22
+    },
+    "first_out": 861.0,
+    "full_last_out": 83308.0,
+    "full_raw_block_wait": 260954.5,
+    "last_out": 68996.5,
+    "overall_takt": 66.60361681329424,
+    "processing_capacity_violations": 0,
+    "qualified": 206,
+    "raw_block_wait_in_window": 217628.0,
+    "segment_count": 18600,
+    "station_slot_occupancy": {
+      "cars": [
+        {
+          "car": 1,
+          "state": "processing_or_blocked"
+        }
+      ],
+      "line": "双线共用",
+      "maximum": 1,
+      "station": "引取",
+      "time": 0.0
+    },
+    "station_slot_overlaps": {
+      "maximum_overlap": {
+        "cars": [],
+        "line": "",
+        "seconds": 0.0,
+        "station": ""
+      },
+      "pair_count": 0,
+      "pair_types": {},
+      "processing_cars_entering_occupied_zero_node": 0
+    },
+    "within_window": 1024,
+    "zero_duration_segment_count": 2480
+  },
+  "round": "v2.9-round1-r2",
+  "screenshot_chain_after_fix": {
+    "12": [
+      {
+        "block_wait": 46.5,
+        "depart": 1228.0,
+        "duration": 97.0,
+        "line": "2号线",
+        "start": 1084.5,
+        "station": "ADAS",
+        "svc_finish": 1181.5
+      },
+      {
+        "block_wait": 114.5,
+        "depart": 1342.5,
+        "duration": 0.0,
+        "line": "2号线",
+        "start": 1228.0,
+        "station": "ARHUD+慢充",
+        "svc_finish": 1228.0
+      }
+    ],
+    "14": [
+      {
+        "block_wait": 7.5,
+        "depart": 1342.5,
+        "duration": 107.0,
+        "line": "2号线",
+        "start": 1228.0,
+        "station": "ADAS",
+        "svc_finish": 1335.0
+      },
+      {
+        "block_wait": 64.5,
+        "depart": 1458.5,
+        "duration": 51.5,
+        "line": "2号线",
+        "start": 1342.5,
+        "station": "ARHUD+慢充",
+        "svc_finish": 1394.0
+      }
+    ],
+    "16": [
+      {
+        "block_wait": 3.0,
+        "depart": 1458.5,
+        "duration": 107.0,
+        "line": "2号线",
+        "start": 1348.5,
+        "station": "ADAS",
+        "svc_finish": 1455.5
+      },
+      {
+        "block_wait": 0.0,
+        "depart": 1602.0,
+        "duration": 143.5,
+        "line": "2号线",
+        "start": 1458.5,
+        "station": "ARHUD+慢充",
+        "svc_finish": 1602.0
+      }
+    ]
+  }
+}

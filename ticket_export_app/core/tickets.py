@@ -3,7 +3,7 @@
 组合票排程 + 导出
 当前阶段说明：
 - 多工程组合票已切换为『运行方式 + 岗位/设备 + A/B/C 工时』录入模型。
-- v2-1 支持固定投车节拍；v2-2 支持车型工时为 0 时跳过该岗位；v2-3B 建立资源 key；v2-4A 建立自动线别分配基础；v2-4B 支持线别连续性与强制线别；v2-4C 支持未来强制线别预判。
+- v2-1 支持固定投车节拍；v2-2 支持车型工时为 0 时保留流转节点；v2-3B 建立资源 key；v2-4A 建立自动线别分配基础；v2-4B 支持线别连续性与强制线别；v2-4C 支持未来强制线别预判。
 - 当前排程/导出逻辑会按车辆类型使用 A/B/C 对应工时；若 B/C 未填写则继承 A 工时。
 - 运行方式会自动推导资源能力：
     * 单线单设备 -> capacity = 1
@@ -208,7 +208,7 @@ def schedule(step_defs: List[Dict[str, Any]],
 
     v2-2：车型跳过岗位
       当前车型在当前岗位的工时 < 0 时，表示该车型跳过该岗位。
-      工时 = 0 时仍然经过该岗位，但不占用加工时间，也不占用当前工位资源。
+      工时 = 0 时仍然经过该岗位，不占用加工设备，但占用当前工位的物理流转车位。
       仅负工时岗位不占用资源、不产生等待、不写入 rows。
 
     v2-3B：设备数量与所属线别资源 key
@@ -372,7 +372,13 @@ def schedule(step_defs: List[Dict[str, Any]],
 
         return ""
 
-    def _pop_resource_slot(heap: List[Tuple[float, str]], st: Dict[str, Any], current_line_no: str, upcoming_forced_line: str = "") -> Tuple[float, str]:
+    def _pop_resource_slot(
+        heap: List[Tuple[float, str]],
+        st: Dict[str, Any],
+        current_line_no: str,
+        upcoming_forced_line: str = "",
+        station_ready_by_line: Optional[Dict[str, float]] = None,
+    ) -> Tuple[float, str]:
         """按强制线别/线别连续性/未来强制线别预判取出资源槽；无约束时取最早释放。"""
         preferred_line = _forced_or_preferred_line(st, current_line_no, upcoming_forced_line)
         if preferred_line:
@@ -389,18 +395,45 @@ def schedule(step_defs: List[Dict[str, Any]],
                 heap.pop(best_idx)
                 heapq.heapify(heap)
                 return best_item
+        if station_ready_by_line:
+            best_idx = min(
+                range(len(heap)),
+                key=lambda idx: (
+                    max(heap[idx][0], station_ready_by_line.get(heap[idx][1], 0.0)),
+                    heap[idx][0],
+                    heap[idx][1],
+                ),
+            )
+            best_item = heap.pop(best_idx)
+            heapq.heapify(heap)
+            return best_item
         return heapq.heappop(heap)
 
-    def _peek_resource_ready(heap: List[Tuple[float, str]], st: Dict[str, Any], current_line_no: str, upcoming_forced_line: str = "") -> float:
-        """按下一岗位强制线别/线别连续性/未来强制线别预估可接收时间。"""
+    def _peek_resource_slot(
+        heap: List[Tuple[float, str]],
+        st: Dict[str, Any],
+        current_line_no: str,
+        upcoming_forced_line: str = "",
+        station_ready_by_line: Optional[Dict[str, float]] = None,
+    ) -> Tuple[float, str]:
+        """按下一岗位线别约束预估资源释放时间和资源线别，不修改资源堆。"""
         if not heap:
-            return 0.0
+            return 0.0, current_line_no or "1号线"
         preferred_line = _forced_or_preferred_line(st, current_line_no, upcoming_forced_line)
         if preferred_line:
             matched = [ready_time for ready_time, line_no in heap if line_no == preferred_line]
             if matched:
-                return min(matched)
-        return heap[0][0]
+                return min(matched), preferred_line
+        if station_ready_by_line:
+            return min(
+                heap,
+                key=lambda item: (
+                    max(item[0], station_ready_by_line.get(item[1], 0.0)),
+                    item[0],
+                    item[1],
+                ),
+            )
+        return min(heap)
 
     def _actual_line_no(st: Dict[str, Any], resource_line_no: str, current_line_no: str, upcoming_forced_line: str = "") -> str:
         """用于 rows 记录的车辆实际线别。双线共用资源尽量沿用进入前线别。"""
@@ -438,6 +471,16 @@ def schedule(step_defs: List[Dict[str, Any]],
                     existing_lines.add(line)
             while len(heap) < cap:
                 heapq.heappush(heap, (0.0, f"{len(heap) + 1}号线"))
+
+    # 每个工位、每条实际流转线只有一个物理车位。
+    # 正工时车辆同时占加工资源和物理车位；0工时车辆只占物理车位。
+    station_slot_ready: Dict[Tuple[int, str], float] = {}
+
+    def _slot_ready_time(step_index: int, line_no: str) -> float:
+        return station_slot_ready.get((step_index, line_no or "1号线"), 0.0)
+
+    def _set_slot_ready_time(step_index: int, line_no: str, ready_time: float) -> None:
+        station_slot_ready[(step_index, line_no or "1号线")] = ready_time
 
     # Zone 名额堆：zid -> [free_time, ...]（长度=capacity）
     zone_heaps: Dict[str, List[float]] = {}
@@ -511,6 +554,82 @@ def schedule(step_defs: List[Dict[str, Any]],
                 return next_index, next_step, next_duration
         return None, None, -1.0
 
+    def _pass_through_line(step_index: int, current_line_no: str, car_type: str) -> str:
+        """0工时节点不强制线别；优先保持车辆当前线别。"""
+        if current_line_no in ("1号线", "2号线"):
+            return current_line_no
+
+        next_idx, next_step = _find_next_effective_step(steps, step_index, car_type)
+        if next_idx is not None and next_step is not None:
+            next_key = str(next_step.get("resource_key", "") or "")
+            next_heap = resource_heaps[next_key]
+            next_forced_line = _upcoming_forced_line(steps, next_idx + 1, car_type)
+            _, resource_line = _peek_resource_slot(
+                next_heap,
+                next_step,
+                current_line_no,
+                next_forced_line,
+                {
+                    line_no: _slot_ready_time(next_idx, _actual_line_no(
+                        next_step,
+                        line_no,
+                        current_line_no,
+                        next_forced_line,
+                    ))
+                    for _, line_no in next_heap
+                },
+            )
+            return _actual_line_no(next_step, resource_line, current_line_no, next_forced_line)
+
+        return "1号线"
+
+    def _next_step_ready(
+        current_index: int,
+        current_line_no: str,
+        car_type: str,
+    ) -> float:
+        """返回紧邻下一个流转节点可接收当前车辆的最早时间。"""
+        next_idx, next_step, next_duration = _find_next_active_step(steps, current_index, car_type)
+        if next_idx is None or next_step is None:
+            return 0.0
+
+        if next_duration <= 0:
+            next_line = _pass_through_line(next_idx, current_line_no, car_type)
+            return _slot_ready_time(next_idx, next_line)
+
+        next_key = str(next_step.get("resource_key", "") or "")
+        next_heap = resource_heaps[next_key]
+        next_forced_line = _upcoming_forced_line(steps, next_idx + 1, car_type)
+        resource_ready, resource_line = _peek_resource_slot(
+            next_heap,
+            next_step,
+            current_line_no,
+            next_forced_line,
+            {
+                line_no: _slot_ready_time(next_idx, _actual_line_no(
+                    next_step,
+                    line_no,
+                    current_line_no,
+                    next_forced_line,
+                ))
+                for _, line_no in next_heap
+            },
+        )
+        next_line = _actual_line_no(
+            next_step,
+            resource_line,
+            current_line_no,
+            next_forced_line,
+        )
+        next_ready = max(resource_ready, _slot_ready_time(next_idx, next_line))
+
+        if is_zone_entry(next_idx):
+            nzid = steps[next_idx]["zone_id"]
+            nheap = zone_heaps[nzid]
+            next_ready = max(next_ready, nheap[0] if nheap else 0.0)
+
+        return next_ready
+
     for car, car_type in enumerate(vehicle_seq, start=1):
         theory_launch_time = (car - 1) * launch_takt_value if launch_takt_value > 0 else 0.0
         prev_depart = theory_launch_time
@@ -527,26 +646,38 @@ def schedule(step_defs: List[Dict[str, Any]],
 
             # v2-2：车型跳过岗位逻辑
             # A/B/C 对应工时 < 0 时，表示该车型不需要该岗位，直接跳过。
-            # 工时 = 0 表示该车型仍经过岗位，但不占用加工时间，也不占用资源。
+            # 工时 = 0 表示该车型仍经过岗位，不占用加工设备，但占用物理流转车位。
             if cur_duration < 0:
                 continue
 
             is_zero_duration = abs(cur_duration) <= 1e-9
 
-            # ---- 计算本步开始时间：0 工时只继承车辆流转时间；>0 工时仍受当前工位资源约束 ----
+            # ---- 计算本步开始时间：所有车辆受物理车位约束；正工时车辆另受加工资源约束 ----
             cur_key = str(st.get("resource_key", "") or "")
             cur_heap = resource_heaps[cur_key]
             cur_ready = prev_depart
             resource_line_no = current_line_no
             selected_line_no = current_line_no
 
-            if not is_zero_duration:
+            if is_zero_duration:
+                selected_line_no = _pass_through_line(j, current_line_no, car_type)
+                cur_ready = max(cur_ready, _slot_ready_time(j, selected_line_no))
+            else:
                 upcoming_forced_line = _upcoming_forced_line(steps, j + 1, car_type)
                 cur_ready, resource_line_no = _pop_resource_slot(
                     cur_heap,
                     st,
                     current_line_no,
                     upcoming_forced_line,
+                    {
+                        line_no: _slot_ready_time(j, _actual_line_no(
+                            st,
+                            line_no,
+                            current_line_no,
+                            upcoming_forced_line,
+                        ))
+                        for _, line_no in cur_heap
+                    },
                 )
                 selected_line_no = _actual_line_no(
                     st,
@@ -554,6 +685,7 @@ def schedule(step_defs: List[Dict[str, Any]],
                     current_line_no,
                     upcoming_forced_line,
                 )
+                cur_ready = max(cur_ready, _slot_ready_time(j, selected_line_no))
 
             start = max(cur_ready, prev_depart)
 
@@ -574,57 +706,10 @@ def schedule(step_defs: List[Dict[str, Any]],
 
             svc_finish = start + cur_duration
 
-            # ---- depart 受“下步可接收（服务器释放 + zone 容量）”约束 ----
-            # 0 工时 segment 只是流转节点，不占当前资源，也不在该节点等待下步资源。
-            if is_zero_duration:
-                next_idx, next_st = _find_next_effective_step(steps, j, car_type)
-                if next_st is not None and next_idx is not None:
-                    next_key = str(next_st.get("resource_key", "") or "")
-                    next_heap = resource_heaps[next_key]
-                    next_upcoming_forced_line = _upcoming_forced_line(steps, next_idx + 1, car_type)
-                    next_ready = _peek_resource_ready(
-                        next_heap,
-                        next_st,
-                        selected_line_no,
-                        next_upcoming_forced_line,
-                    )
-
-                    if is_zone_entry(next_idx):
-                        nzid = steps[next_idx]["zone_id"]
-                        nheap = zone_heaps[nzid]
-                        next_ready = max(next_ready, nheap[0] if nheap else 0.0)
-
-                    depart = max(svc_finish, next_ready)
-                else:
-                    depart = svc_finish
-            else:
-                next_active_idx, next_active_st, next_active_duration = _find_next_active_step(steps, j, car_type)
-                if next_active_st is not None and next_active_idx is not None and next_active_duration <= 0:
-                    # 当前步后面紧跟 0 工时 pass-through 节点。
-                    # 车辆可以先从当前作业工位释放到 pass-through 节点，
-                    # 下游真正不可接收时，应把等待挂在该 0 工时节点，而不是回传到当前工位。
-                    depart = svc_finish
-                else:
-                    next_idx, next_st = _find_next_effective_step(steps, j, car_type)
-                    if next_st is not None and next_idx is not None:
-                        next_key = str(next_st.get("resource_key", "") or "")
-                        next_heap = resource_heaps[next_key]
-                        next_upcoming_forced_line = _upcoming_forced_line(steps, next_idx + 1, car_type)
-                        next_ready = _peek_resource_ready(
-                            next_heap,
-                            next_st,
-                            selected_line_no,
-                            next_upcoming_forced_line,
-                        )
-
-                        if is_zone_entry(next_idx):
-                            nzid = steps[next_idx]["zone_id"]
-                            nheap = zone_heaps[nzid]
-                            next_ready = max(next_ready, nheap[0] if nheap else 0.0)
-
-                        depart = max(svc_finish, next_ready)
-                    else:
-                        depart = svc_finish
+            # ---- depart 受紧邻下一个流转节点的物理车位/加工资源/zone容量约束 ----
+            # 车辆只有在下一个节点可接收时才离开当前节点，等待逐级向上游回传。
+            next_ready = _next_step_ready(j, selected_line_no, car_type)
+            depart = max(svc_finish, next_ready)
 
             block_wait = max(0.0, depart - svc_finish)
 
@@ -673,6 +758,7 @@ def schedule(step_defs: List[Dict[str, Any]],
             # ---- 更新状态，进入下一步 ----
             if not is_zero_duration:
                 heapq.heappush(cur_heap, (depart, resource_line_no))
+            _set_slot_ready_time(j, selected_line_no, depart)
             prev_depart = depart
             if not is_zero_duration and selected_line_no:
                 current_line_no = selected_line_no
