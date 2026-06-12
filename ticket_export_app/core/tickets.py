@@ -15,6 +15,7 @@
 from __future__ import annotations
 import math
 import heapq
+import hashlib
 from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 from core.analysis import analyze_schedule_v2
@@ -187,6 +188,119 @@ def _normalize_defs(step_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any
     return steps, zones, gate_buffers
 
 
+QUANTITY_SEQUENCE_RULE_VERSION = "quantity-balanced-run-tau1-v1"
+QUANTITY_SEQUENCE_LAG_TOLERANCE = 1.0
+
+
+def vehicle_sequence_hash(vehicle_sequence: List[str]) -> str:
+    """Return the stable SHA-256 used to identify a frozen vehicle sequence."""
+    return hashlib.sha256("".join(vehicle_sequence).encode("utf-8")).hexdigest()
+
+
+def build_vehicle_sequence(cars: int,
+                           vehicle_counts: Dict[str, int] | None = None,
+                           sequence_mode: str = "grouped",
+                           max_consecutive: int = 10,
+                           ratio_pattern: Optional[Dict[str, int]] = None) -> List[str]:
+    """Build the deterministic vehicle sequence used by schedule and sequence freeze."""
+    vehicle_seq: List[str] = []
+    if vehicle_counts:
+        counts: Dict[str, int] = {}
+        for vehicle_type in ("A", "B", "C"):
+            try:
+                counts[vehicle_type] = max(0, int(vehicle_counts.get(vehicle_type, 0) or 0))
+            except Exception:
+                counts[vehicle_type] = 0
+
+        max_consecutive = max(1, int(max_consecutive or 1))
+
+        if sequence_mode == "alternate":
+            # R9: let the current type run toward the configured limit, but insert a
+            # lagging type as soon as its cumulative deficit reaches one vehicle.
+            target_counts = dict(counts)
+            remaining = dict(counts)
+            placed = {vehicle_type: 0 for vehicle_type in ("A", "B", "C")}
+            total_cars = sum(target_counts.values())
+            order = {"A": 0, "B": 1, "C": 2}
+            last_type = ""
+            run_len = 0
+
+            for position in range(1, total_cars + 1):
+                deficits = {
+                    vehicle_type: (
+                        target_counts[vehicle_type] / total_cars * position
+                        - placed[vehicle_type]
+                    )
+                    for vehicle_type in ("A", "B", "C")
+                }
+                can_continue = (
+                    bool(last_type)
+                    and remaining[last_type] > 0
+                    and run_len < max_consecutive
+                )
+                another_type_is_lagging = any(
+                    vehicle_type != last_type
+                    and remaining[vehicle_type] > 0
+                    and deficits[vehicle_type] >= QUANTITY_SEQUENCE_LAG_TOLERANCE - 1e-12
+                    for vehicle_type in ("A", "B", "C")
+                )
+
+                if can_continue and not another_type_is_lagging:
+                    pick = last_type
+                else:
+                    other_type_remains = bool(last_type) and any(
+                        remaining[vehicle_type] > 0 and vehicle_type != last_type
+                        for vehicle_type in ("A", "B", "C")
+                    )
+                    candidates = [
+                        vehicle_type
+                        for vehicle_type in ("A", "B", "C")
+                        if remaining[vehicle_type] > 0
+                        and not (
+                            vehicle_type == last_type
+                            and run_len >= max_consecutive
+                            and other_type_remains
+                        )
+                    ]
+                    pick = max(
+                        candidates,
+                        key=lambda vehicle_type: (
+                            round(deficits[vehicle_type], 12),
+                            remaining[vehicle_type],
+                            -order[vehicle_type],
+                        ),
+                    )
+
+                vehicle_seq.append(pick)
+                placed[pick] += 1
+                remaining[pick] -= 1
+                if pick == last_type:
+                    run_len += 1
+                else:
+                    last_type = pick
+                    run_len = 1
+        elif sequence_mode == "ratio":
+            # Ratio mode remains the existing fixed-block behavior in R9.
+            pattern = ratio_pattern or {}
+            a = max(0, int(pattern.get("A", 0) or 0))
+            b = max(0, int(pattern.get("B", 0) or 0))
+            c = max(0, int(pattern.get("C", 0) or 0))
+            block: List[str] = (["A"] * a) + (["B"] * b) + (["C"] * c)
+            if not block:
+                raise ValueError("按比例运行模式下，比例块不能为空")
+            total_cars = max(0, int(cars))
+            while len(vehicle_seq) < total_cars:
+                need = total_cars - len(vehicle_seq)
+                vehicle_seq.extend(block[:need])
+        else:
+            for vehicle_type in ("A", "B", "C"):
+                vehicle_seq.extend([vehicle_type] * counts[vehicle_type])
+
+    if not vehicle_seq:
+        vehicle_seq = ["A" for _ in range(max(0, int(cars)))]
+    return vehicle_seq
+
+
 # ---------------- 调度（含 Zone + gate_buffer） ---------------- #
 def schedule(step_defs: List[Dict[str, Any]],
              cars: int,
@@ -194,7 +308,8 @@ def schedule(step_defs: List[Dict[str, Any]],
              sequence_mode: str = "grouped",
              max_consecutive: int = 10,
              ratio_pattern: Optional[Dict[str, int]] = None,
-             launch_takt: Optional[float] = None) -> Tuple[List[Dict[str, Any]], float]:
+             launch_takt: Optional[float] = None,
+             vehicle_sequence: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], float]:
     """
     返回：
       rows: 每车-每步记录：
@@ -233,73 +348,26 @@ def schedule(step_defs: List[Dict[str, Any]],
     steps, zones, gate_buffers = _normalize_defs(step_defs)
     m = len(steps)
 
-    # 车型序列
-    vehicle_seq: List[str] = []
-    if vehicle_counts:
-        counts: Dict[str, int] = {}
-        for vt in ("A", "B", "C"):
-            try:
-                counts[vt] = max(0, int(vehicle_counts.get(vt, 0) or 0))
-            except Exception:
-                counts[vt] = 0
-
-        max_consecutive = max(1, int(max_consecutive or 1))
-
-        if sequence_mode == "alternate":
-            # 交替混流 + 最大连续台数约束
-            # 规则：尽量避免同车型连续超过 max_consecutive；若无可选车型则放宽约束继续排。
-            last_type = ""
-            run_len = 0
-            while any(v > 0 for v in counts.values()):
-                candidates = []
-                for vt in ("A", "B", "C"):
-                    if counts[vt] <= 0:
-                        continue
-                    if vt == last_type and run_len >= max_consecutive:
-                        continue
-                    candidates.append(vt)
-
-                if not candidates:
-                    # 所有可用车型都被连续台数限制挡住，则放宽约束，优先取剩余最多的车型
-                    candidates = [vt for vt in ("A", "B", "C") if counts[vt] > 0]
-                    candidates.sort(key=lambda x: (-counts[x], x))
-                    pick = candidates[0]
-                else:
-                    # 优先取剩余最多的车型；同数时按 A/B/C 顺序
-                    candidates.sort(key=lambda x: (-counts[x], x))
-                    pick = candidates[0]
-
-                vehicle_seq.append(pick)
-                counts[pick] -= 1
-                if pick == last_type:
-                    run_len += 1
-                else:
-                    last_type = pick
-                    run_len = 1
-        elif sequence_mode == "ratio":
-            # 按比例运行：固定比例块循环，例如 6:4 -> AAAAAABBBB，然后重复展开到总台数。
-            pattern = ratio_pattern or {}
-            a = max(0, int(pattern.get("A", 0) or 0))
-            b = max(0, int(pattern.get("B", 0) or 0))
-            c = max(0, int(pattern.get("C", 0) or 0))
-
-            block: List[str] = (["A"] * a) + (["B"] * b) + (["C"] * c)
-            if not block:
-                raise ValueError("按比例运行模式下，比例块不能为空")
-
-            vehicle_seq = []
-            total_cars = max(0, int(cars))
-            while len(vehicle_seq) < total_cars:
-                need = total_cars - len(vehicle_seq)
-                vehicle_seq.extend(block[:need])
-        else:
-            # 顺排：A -> B -> C
-            # 这里明确忽略 max_consecutive，后续如果做方式B界面联动再在 UI 上灰掉提示
-            for vt in ("A", "B", "C"):
-                vehicle_seq.extend([vt] * counts[vt])
-
-    if not vehicle_seq:
-        vehicle_seq = ["A" for _ in range(max(0, int(cars)))]
+    if vehicle_sequence is not None:
+        vehicle_seq = [str(vehicle_type).strip().upper() for vehicle_type in vehicle_sequence]
+        if not vehicle_seq or any(vehicle_type not in ("A", "B", "C") for vehicle_type in vehicle_seq):
+            raise ValueError("冻结排列包含无效车型，必须重新冻结。")
+        if vehicle_counts and sequence_mode != "ratio":
+            expected = {
+                vehicle_type: max(0, int(vehicle_counts.get(vehicle_type, 0) or 0))
+                for vehicle_type in ("A", "B", "C")
+            }
+            actual = {vehicle_type: vehicle_seq.count(vehicle_type) for vehicle_type in ("A", "B", "C")}
+            if actual != expected:
+                raise ValueError("冻结排列与当前A/B/C数量不一致，必须重新冻结。")
+    else:
+        vehicle_seq = build_vehicle_sequence(
+            cars,
+            vehicle_counts,
+            sequence_mode,
+            max_consecutive,
+            ratio_pattern,
+        )
 
     cars = len(vehicle_seq)
     try:
@@ -897,7 +965,8 @@ def schedule_and_export(defs: List[Dict[str, Any]],
                         sequence_mode: str = "grouped",
                         max_consecutive: int = 10,
                         ratio_pattern: Optional[Dict[str, int]] = None,
-                        target_takt: Optional[float] = None) -> Dict[str, Any]:
+                        target_takt: Optional[float] = None,
+                        vehicle_sequence: Optional[List[str]] = None) -> Dict[str, Any]:
     grid_step = 1.0 if (not isinstance(grid_step, (int, float)) or grid_step <= 0) else float(grid_step)
     rows, max_finish = schedule(
         defs,
@@ -907,6 +976,7 @@ def schedule_and_export(defs: List[Dict[str, Any]],
         max_consecutive,
         ratio_pattern,
         launch_takt=target_takt,
+        vehicle_sequence=vehicle_sequence,
     )
     analysis = analyze_schedule(rows, max_finish, target_takt)
     # ---- 收集用户自定义颜色 (display -> hex)

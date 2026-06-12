@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QColor, QPen, QBrush, QFont
 import os
 import math
+from datetime import datetime
 from html import escape
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
@@ -51,6 +52,10 @@ class ExportTicketWindow(QMainWindow):
 
         self.thread_pool = QThreadPool.globalInstance()
         self.dst_path = None
+        self._frozen_vehicle_sequence = None
+        self._frozen_vehicle_sequence_signature = None
+        self._frozen_vehicle_sequence_hash = ""
+        self._frozen_vehicle_sequence_generated_at = ""
 
         self._build_ui()
         self._connect_signals()
@@ -250,6 +255,15 @@ class ExportTicketWindow(QMainWindow):
         self.spn_max_run.setValue(10)
         self.spn_max_run.setToolTip("默认10台；填1表示尽量强制交替")
         row_top_3.addWidget(self.spn_max_run)
+
+        row_top_3.addSpacing(8)
+        self.btn_freeze_sequence = QPushButton("排列冻结", self.page_multi_input)
+        self.btn_freeze_sequence.setFixedWidth(82)
+        self.btn_freeze_sequence.setToolTip("生成并冻结当前按数量交替混流的完整投车顺序")
+        row_top_3.addWidget(self.btn_freeze_sequence)
+        self.lbl_sequence_freeze_status = QLabel("未冻结")
+        self.lbl_sequence_freeze_status.setStyleSheet("color: #8a5a00; font-size: 12px;")
+        row_top_3.addWidget(self.lbl_sequence_freeze_status)
         row_top_3.addStretch()
 
         self.params_tip = QLabel(
@@ -607,6 +621,15 @@ class ExportTicketWindow(QMainWindow):
         self.btn_del_row.clicked.connect(self.del_row)
         self.btn_fill_sample.clicked.connect(self.fill_sample)
         self.cmb_launch_mode.currentIndexChanged.connect(self._update_mode_ui)
+        self.cmb_launch_mode.currentIndexChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.cmb_seq.currentIndexChanged.connect(self._update_sequence_freeze_ui)
+        self.cmb_seq.currentIndexChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_a_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_b_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_c_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_total_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_max_run.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.btn_freeze_sequence.clicked.connect(self._freeze_vehicle_sequence)
         self.btn_go_result_page.clicked.connect(lambda: self.multi_tabs.setCurrentWidget(self.page_multi_result_scroll))
         self.btn_analyze.clicked.connect(self.do_analyze)
         self.btn_export.clicked.connect(self.do_export)
@@ -648,6 +671,7 @@ class ExportTicketWindow(QMainWindow):
         if hasattr(self, "spn_max_run"):
             self.spn_max_run.setVisible(not is_ratio)
             self.spn_max_run.setEnabled(not is_ratio)
+        self._update_sequence_freeze_ui()
         if hasattr(self, "params_tip"):
             if is_ratio:
                 self.params_tip.setText(
@@ -656,9 +680,124 @@ class ExportTicketWindow(QMainWindow):
                 )
             else:
                 self.params_tip.setText("当前模式：按数量投车。A/B/C 填数量；顺排按 A→B→C，交替混流可配合最大连续台数使用。")
+
+    def _sequence_freeze_signature(self):
+        return (
+            self.cmb_launch_mode.currentIndex(),
+            int(self.spn_a_cars.value()),
+            int(self.spn_b_cars.value()),
+            int(self.spn_c_cars.value()),
+            int(self.spn_total_cars.value()),
+            self.cmb_seq.currentIndex(),
+            int(self.spn_max_run.value()),
+            tickets.QUANTITY_SEQUENCE_RULE_VERSION,
+        )
+
+    def _update_sequence_freeze_ui(self, *_args):
+        if not hasattr(self, "btn_freeze_sequence"):
+            return
+        is_quantity = self.cmb_launch_mode.currentIndex() == 0
+        is_alternate = self.cmb_seq.currentIndex() == 1
+        self.btn_freeze_sequence.setVisible(is_quantity)
+        self.lbl_sequence_freeze_status.setVisible(is_quantity)
+        self.btn_freeze_sequence.setEnabled(is_quantity and is_alternate)
+        if is_quantity and not is_alternate:
+            self.lbl_sequence_freeze_status.setText("顺排无需冻结")
+            self.lbl_sequence_freeze_status.setStyleSheet("color: #667085; font-size: 12px;")
+        elif self._frozen_vehicle_sequence is None:
+            self.lbl_sequence_freeze_status.setText("未冻结")
+            self.lbl_sequence_freeze_status.setStyleSheet("color: #8a5a00; font-size: 12px;")
+
+    def _invalidate_frozen_vehicle_sequence(self, *_args):
+        if self._frozen_vehicle_sequence is not None:
+            self._frozen_vehicle_sequence = None
+            self._frozen_vehicle_sequence_signature = None
+            self._frozen_vehicle_sequence_hash = ""
+            self._frozen_vehicle_sequence_generated_at = ""
+        self._update_sequence_freeze_ui()
+
+    @staticmethod
+    def _max_sequence_run(vehicle_sequence):
+        max_run = 0
+        run = 0
+        last_type = ""
+        for vehicle_type in vehicle_sequence:
+            if vehicle_type == last_type:
+                run += 1
+            else:
+                last_type = vehicle_type
+                run = 1
+            max_run = max(max_run, run)
+        return max_run
+
+    def _freeze_vehicle_sequence(self):
+        if self.cmb_launch_mode.currentIndex() != 0 or self.cmb_seq.currentIndex() != 1:
+            QMessageBox.information(self, "排列冻结", "排列冻结当前用于按数量投车的交替混流。")
+            return
+
+        vehicle_counts = {
+            "A": int(self.spn_a_cars.value()),
+            "B": int(self.spn_b_cars.value()),
+            "C": int(self.spn_c_cars.value()),
+        }
+        total_cars = sum(vehicle_counts.values())
+        if total_cars <= 0:
+            QMessageBox.warning(self, "排列冻结", "A/B/C数量合计必须大于0。")
+            return
+
+        max_consecutive = int(self.spn_max_run.value())
+        vehicle_sequence = tickets.build_vehicle_sequence(
+            total_cars,
+            vehicle_counts,
+            "alternate",
+            max_consecutive,
+        )
+        actual_counts = {
+            vehicle_type: vehicle_sequence.count(vehicle_type)
+            for vehicle_type in ("A", "B", "C")
+        }
+        if actual_counts != vehicle_counts:
+            QMessageBox.critical(self, "排列冻结", "生成排列与当前A/B/C数量不一致，未执行冻结。")
+            return
+
+        sequence_hash = tickets.vehicle_sequence_hash(vehicle_sequence)
+        self._frozen_vehicle_sequence = list(vehicle_sequence)
+        self._frozen_vehicle_sequence_signature = self._sequence_freeze_signature()
+        self._frozen_vehicle_sequence_hash = sequence_hash
+        self._frozen_vehicle_sequence_generated_at = datetime.now().isoformat(timespec="seconds")
+        actual_max_run = self._max_sequence_run(vehicle_sequence)
+        self.lbl_sequence_freeze_status.setText(
+            f"已冻结 {len(vehicle_sequence)}台 · {sequence_hash[:8]}"
+        )
+        self.lbl_sequence_freeze_status.setStyleSheet("color: #087443; font-size: 12px; font-weight: 600;")
+        preview = "".join(vehicle_sequence[:30])
+        QMessageBox.information(
+            self,
+            "排列冻结完成",
+            "\n".join([
+                f"规则：{tickets.QUANTITY_SEQUENCE_RULE_VERSION}",
+                f"车型数量：A{actual_counts['A']} / B{actual_counts['B']} / C{actual_counts['C']}",
+                f"前30台：{preview}",
+                f"实际最大连续台数：{actual_max_run}",
+                f"SHA-256：{sequence_hash}",
+            ]),
+        )
+
+    def _frozen_sequence_for_current_inputs(self, sequence_mode):
+        if self.cmb_launch_mode.currentIndex() != 0 or sequence_mode != "alternate":
+            return None
+        if (
+            self._frozen_vehicle_sequence is None
+            or self._frozen_vehicle_sequence_signature != self._sequence_freeze_signature()
+        ):
+            self._invalidate_frozen_vehicle_sequence()
+            raise ValueError("当前交替混流排列尚未冻结，请先点击“排列冻结”。")
+        return list(self._frozen_vehicle_sequence)
+
     def do_analyze(self):
         try:
             project, cars, grid_step, wait_policy, defs, vehicle_counts, sequence_mode, max_consecutive, ratio_pattern, target_takt = self._collect_inputs()
+            frozen_sequence = self._frozen_sequence_for_current_inputs(sequence_mode)
             rows, max_finish = tickets.schedule(
                 defs,
                 cars,
@@ -667,6 +806,7 @@ class ExportTicketWindow(QMainWindow):
                 max_consecutive,
                 ratio_pattern,
                 launch_takt=target_takt,
+                vehicle_sequence=frozen_sequence,
             )
             analysis = tickets.analyze_schedule(rows, max_finish, target_takt)
             analysis = self._apply_time_window_analysis(analysis, rows, target_takt)
@@ -2174,6 +2314,7 @@ class ExportTicketWindow(QMainWindow):
     def do_export(self):
         try:
             project, cars, grid_step, wait_policy, defs, vehicle_counts, sequence_mode, max_consecutive, ratio_pattern, target_takt = self._collect_inputs()
+            frozen_sequence = self._frozen_sequence_for_current_inputs(sequence_mode)
         except Exception as e:
             QMessageBox.warning(self, "输入有误", str(e))
             return
@@ -2191,7 +2332,7 @@ class ExportTicketWindow(QMainWindow):
         worker = Worker(
             tickets.schedule_and_export,
             defs, cars, grid_step, wait_policy, project, self.dst_path,
-            vehicle_counts, sequence_mode, max_consecutive, ratio_pattern, target_takt,
+            vehicle_counts, sequence_mode, max_consecutive, ratio_pattern, target_takt, frozen_sequence,
         )
         worker.signals.error.connect(self._on_error)
         worker.signals.finished.connect(self._on_export_finished)
