@@ -1,0 +1,100 @@
+{
+  "assertions": "passed",
+  "minimal_zero_node_trace": {
+    "blocking_time": 20.0,
+    "event_count": 1,
+    "immediate_next_station": "L2++",
+    "root_station": "小跑道",
+    "skipped_zero_duration_node": true,
+    "source_station": "气囊安装+绝缘"
+  },
+  "quantity": {
+    "attributed_blocking_time": 4785563.5,
+    "attributed_launch_wait_time": 4625916.0,
+    "attributed_post_process_wait_time": 159647.5,
+    "displayed_blocking_time": 121987.5,
+    "generated": 1148,
+    "moved_attributions": [
+      {
+        "blocking_time": 14460.0,
+        "event_count": 229,
+        "immediate_next_station": "电检2",
+        "root_station": "小跑道",
+        "skipped_zero_duration_node": true,
+        "source_station": "电检1"
+      },
+      {
+        "blocking_time": 9002.0,
+        "event_count": 275,
+        "immediate_next_station": "ARHUD+慢充",
+        "root_station": "转毂",
+        "skipped_zero_duration_node": true,
+        "source_station": "ADAS"
+      },
+      {
+        "blocking_time": 5958.0,
+        "event_count": 239,
+        "immediate_next_station": "电检1",
+        "root_station": "小跑道",
+        "skipped_zero_duration_node": true,
+        "source_station": "L2++"
+      },
+      {
+        "blocking_time": 3267.0,
+        "event_count": 168,
+        "immediate_next_station": "空气悬挂+快充",
+        "root_station": "四轮定位上、下",
+        "skipped_zero_duration_node": true,
+        "source_station": "集约"
+      }
+    ],
+    "moved_events": 911,
+    "moved_time": 32687.0,
+    "schedule_time_chain_unchanged": true
+  },
+  "ratio": {
+    "attributed_blocking_time": 6246773.5,
+    "attributed_launch_wait_time": 6080345.5,
+    "attributed_post_process_wait_time": 166428.0,
+    "displayed_blocking_time": 122606.0,
+    "generated": 1240,
+    "moved_attributions": [
+      {
+        "blocking_time": 13015.0,
+        "event_count": 246,
+        "immediate_next_station": "电检2",
+        "root_station": "小跑道",
+        "skipped_zero_duration_node": true,
+        "source_station": "电检1"
+      },
+      {
+        "blocking_time": 10479.0,
+        "event_count": 246,
+        "immediate_next_station": "ARHUD+慢充",
+        "root_station": "转毂",
+        "skipped_zero_duration_node": true,
+        "source_station": "ADAS"
+      },
+      {
+        "blocking_time": 7845.0,
+        "event_count": 246,
+        "immediate_next_station": "电检1",
+        "root_station": "小跑道",
+        "skipped_zero_duration_node": true,
+        "source_station": "L2++"
+      },
+      {
+        "blocking_time": 1793.0,
+        "event_count": 124,
+        "immediate_next_station": "空气悬挂+快充",
+        "root_station": "四轮定位上、下",
+        "skipped_zero_duration_node": true,
+        "source_station": "集约"
+      }
+    ],
+    "moved_events": 862,
+    "moved_time": 33132.0,
+    "schedule_time_chain_unchanged": true
+  },
+  "round": "v2.9-round4-r1"
+}

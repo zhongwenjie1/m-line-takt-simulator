@@ -349,16 +349,31 @@ def _is_plausible_blocking_root(profile: Dict[str, Any], target_takt: float) -> 
     return bool(profile.get("has_process_over_takt", False))
 
 
+def _next_processing_station(car_rows: List[Dict[str, Any]], current_index: int) -> str:
+    """Find the next station where this vehicle actually requires processing."""
+    for next_row in car_rows[current_index + 1:]:
+        if _row_duration(next_row) <= 0:
+            continue
+        station = _row_station(next_row)
+        if station:
+            return station
+    return _row_station(car_rows[current_index]) if current_index < len(car_rows) else ""
+
+
 def _compute_blocking_summary(rows: List[Dict[str, Any]], target_takt: float) -> Dict[str, Any]:
     """
     v2-5 主业务口径：阻塞根因分析。
 
     口径说明：
     - launch_wait：车辆进入当前工序前等待，根因归属当前工序。
-    - block_wait：车辆完成当前工序后等待下一工序，根因归属下一工序。
+    - block_wait：车辆完成当前工序后等待下游接收，根因沿路径追到下一个
+      工时大于0的真实作业工位；中间0工时节点只表示车辆停留位置。
     - 只统计超过目标节拍余量后仍无法被吸收的等待，即节拍外阻塞工时。
     """
     blocking_by_station: Dict[str, float] = defaultdict(float)
+    attribution_by_pair: Dict[tuple[str, str], Dict[str, Any]] = {}
+    attributed_launch_wait_time = 0.0
+    attributed_post_process_wait_time = 0.0
     station_profiles = _build_station_profiles(rows, target_takt)
     by_car = _group_rows_by_car(rows)
 
@@ -382,15 +397,32 @@ def _compute_blocking_summary(rows: List[Dict[str, Any]], target_takt: float) ->
             current_station = _row_station(row)
             if launch_overflow > 0 and current_station:
                 blocking_by_station[current_station] += launch_overflow
+                attributed_launch_wait_time += launch_overflow
 
             if block_overflow > 0:
-                if idx + 1 < len(car_rows):
-                    next_row = car_rows[idx + 1]
-                    root_station = _row_station(next_row)
-                else:
-                    root_station = current_station
+                immediate_station = (
+                    _row_station(car_rows[idx + 1])
+                    if idx + 1 < len(car_rows)
+                    else current_station
+                )
+                root_station = _next_processing_station(car_rows, idx)
                 if root_station:
                     blocking_by_station[root_station] += block_overflow
+                    attributed_post_process_wait_time += block_overflow
+                    pair = (current_station, root_station)
+                    item = attribution_by_pair.setdefault(
+                        pair,
+                        {
+                            "source_station": current_station,
+                            "immediate_next_station": immediate_station,
+                            "root_station": root_station,
+                            "event_count": 0,
+                            "blocking_time": 0.0,
+                            "skipped_zero_duration_node": immediate_station != root_station,
+                        },
+                    )
+                    item["event_count"] += 1
+                    item["blocking_time"] += block_overflow
 
     blocking_stations: List[Dict[str, Any]] = []
     for station, blocking_time in sorted(blocking_by_station.items()):
@@ -410,7 +442,20 @@ def _compute_blocking_summary(rows: List[Dict[str, Any]], target_takt: float) ->
         })
 
     total_blocking_time = sum(item["blocking_time"] for item in blocking_stations)
+    attributed_blocking_time = sum(blocking_by_station.values())
     overflow_vehicle_count = total_blocking_time / target_takt if target_takt > 0 else 0.0
+    blocking_root_attributions = sorted(
+        attribution_by_pair.values(),
+        key=lambda item: (-float(item["blocking_time"]), item["root_station"], item["source_station"]),
+    )
+    attributed_blocking_stations = [
+        {"station": station, "blocking_time": blocking_time}
+        for station, blocking_time in sorted(
+            blocking_by_station.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+        if blocking_time > 0
+    ]
 
     if blocking_stations:
         blocking_station_text = "、".join(item["station"] for item in blocking_stations)
@@ -433,6 +478,11 @@ def _compute_blocking_summary(rows: List[Dict[str, Any]], target_takt: float) ->
         "total_blocking_time": total_blocking_time,
         "overflow_vehicle_count": overflow_vehicle_count,
         "blocking_time": total_blocking_time,
+        "attributed_blocking_time": attributed_blocking_time,
+        "attributed_launch_wait_time": attributed_launch_wait_time,
+        "attributed_post_process_wait_time": attributed_post_process_wait_time,
+        "attributed_blocking_stations": attributed_blocking_stations,
+        "blocking_root_attributions": blocking_root_attributions,
         "overflow_wait_time": total_blocking_time,
         "overflow_wait_equivalent_cars": overflow_vehicle_count,
         "wait_equivalent_cars": overflow_vehicle_count,
