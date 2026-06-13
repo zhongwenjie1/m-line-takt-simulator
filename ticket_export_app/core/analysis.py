@@ -383,7 +383,7 @@ def _compute_wait_classification(
     """Split in-line actual waiting from waiting beyond station holding capacity.
 
     对外显示术语定版（2026-06-13，UI/报表第6轮按此呈现；内部英文键名保持不变以兼容）：
-      - total_bottleneck_wait / bottleneck_wait      -> 「超出可接纳等待」= max(0, 实际等待 − 可接纳上限)
+      - total_bottleneck_wait / bottleneck_wait      -> 「节拍外等待」= max(0, 实际等待 − 可接纳上限)
       - holding_limit                                 -> 「可接纳上限」= 有效设备数 × 目标节拍
       - actual_wait / total_actual_wait               -> 「实际等待 / 累计实际等待」
       - downstream_station /
@@ -524,6 +524,158 @@ def _compute_capacity_over_takt_summary(
         "capacity_over_takt_processes": processes,
         "capacity_over_takt_total_time": total_time,
         "capacity_over_takt_station_text": station_text,
+    }
+
+
+def _compute_wait_cause_chain_summary(
+    rows: List[Dict[str, Any]], target_takt: float
+) -> Dict[str, Any]:
+    """Aggregate scheduler-recorded cause slices for waiting beyond holding limits."""
+    grouped: Dict[tuple[str, str, str, str], Dict[str, Any]] = {}
+    details: List[Dict[str, Any]] = []
+    explained_time = 0.0
+    incomplete_time = 0.0
+
+    for row in rows:
+        actual_wait = _row_block_wait(row)
+        if actual_wait <= 0:
+            continue
+        waiting_station = _row_station(row)
+        holding_limit = max(0.0, target_takt) * _row_capacity(row)
+        excess_start = _to_float(row.get("svc_finish"), 0.0) + holding_limit
+        excess_end = _to_float(row.get("depart"), excess_start)
+        if excess_end <= excess_start:
+            continue
+
+        event_keys: set[tuple[str, str, str, str]] = set()
+        covered_time = 0.0
+        for cause_slice in row.get("wait_cause_slices", []) or []:
+            slice_start = max(excess_start, _to_float(cause_slice.get("start"), excess_start))
+            slice_end = min(excess_end, _to_float(cause_slice.get("end"), excess_end))
+            duration = max(0.0, slice_end - slice_start)
+            if duration <= 0:
+                continue
+            covered_time += duration
+
+            chain = list(cause_slice.get("chain", []) or [])
+            direct = chain[0] if chain else {}
+            direct_station = str(direct.get("blocked_station", "") or "未知工程")
+            direct_type = str(direct.get("block_type", "") or "unresolved")
+            terminal_type = str(cause_slice.get("terminal_type", "") or "unresolved")
+            terminal_station = str(cause_slice.get("terminal_station", "") or "未知工程")
+            terminal_resource = str(cause_slice.get("terminal_resource", "") or "")
+            terminal_car_type = str(cause_slice.get("terminal_car_type", "") or "")
+            complete = bool(cause_slice.get("chain_complete", False))
+
+            if not complete:
+                terminal_label = "原因链不完整"
+                incomplete_time += duration
+            elif terminal_type == "over_takt_processing":
+                type_suffix = f" {terminal_car_type}" if terminal_car_type else ""
+                terminal_label = f"{terminal_station}{type_suffix}超节拍加工占用"
+                explained_time += duration
+            else:
+                resource_label = terminal_station or terminal_resource or "未知资源"
+                terminal_label = f"{resource_label}前车占用"
+                explained_time += duration
+
+            key = (waiting_station, direct_station, terminal_label, direct_type)
+            item = grouped.setdefault(
+                key,
+                {
+                    "waiting_station": waiting_station,
+                    "direct_blocking_station": direct_station,
+                    "terminal_cause": terminal_label,
+                    "direct_block_type": direct_type,
+                    "event_count": 0,
+                    "wait_time": 0.0,
+                    "chain_complete": complete,
+                },
+            )
+            item["wait_time"] += duration
+            event_keys.add(key)
+            details.append(
+                {
+                    "car": _car_key(row),
+                    "car_type": str(row.get("car_type", "") or ""),
+                    "waiting_station": waiting_station,
+                    "wait_start": slice_start,
+                    "wait_end": slice_end,
+                    "wait_time": duration,
+                    "actual_wait": actual_wait,
+                    "holding_limit": holding_limit,
+                    "direct_blocker_car": direct.get("blocker_car"),
+                    "direct_blocking_station": direct_station,
+                    "direct_blocking_resource": str(direct.get("blocked_resource", "") or ""),
+                    "direct_block_type": direct_type,
+                    "terminal_car": cause_slice.get("terminal_car"),
+                    "terminal_station": terminal_station,
+                    "terminal_resource": terminal_resource,
+                    "terminal_type": terminal_type,
+                    "terminal_cause": terminal_label,
+                    "chain_complete": complete,
+                    "chain": chain,
+                }
+            )
+        for key in event_keys:
+            grouped[key]["event_count"] += 1
+
+        expected_time = excess_end - excess_start
+        if covered_time + 1e-9 < expected_time:
+            missing_time = expected_time - covered_time
+            incomplete_time += missing_time
+            missing_key = (waiting_station, "未知工程", "原因链不完整", "unresolved")
+            missing_item = grouped.setdefault(
+                missing_key,
+                {
+                    "waiting_station": waiting_station,
+                    "direct_blocking_station": "未知工程",
+                    "terminal_cause": "原因链不完整",
+                    "direct_block_type": "unresolved",
+                    "event_count": 0,
+                    "wait_time": 0.0,
+                    "chain_complete": False,
+                },
+            )
+            missing_item["event_count"] += 1
+            missing_item["wait_time"] += missing_time
+            details.append(
+                {
+                    "car": _car_key(row),
+                    "car_type": str(row.get("car_type", "") or ""),
+                    "waiting_station": waiting_station,
+                    "wait_start": excess_start + covered_time,
+                    "wait_end": excess_end,
+                    "wait_time": missing_time,
+                    "actual_wait": actual_wait,
+                    "holding_limit": holding_limit,
+                    "direct_blocker_car": None,
+                    "direct_blocking_station": "未知工程",
+                    "direct_blocking_resource": "",
+                    "direct_block_type": "unresolved",
+                    "terminal_car": None,
+                    "terminal_station": "",
+                    "terminal_resource": "",
+                    "terminal_type": "unresolved",
+                    "terminal_cause": "原因链不完整",
+                    "chain_complete": False,
+                    "chain": [],
+                }
+            )
+
+    summary = sorted(
+        grouped.values(),
+        key=lambda item: (-float(item["wait_time"]), -int(item["event_count"]), item["waiting_station"], item["terminal_cause"]),
+    )
+    total_time = explained_time + incomplete_time
+    coverage_rate = explained_time / total_time if total_time > 0 else 1.0
+    return {
+        "wait_cause_chain_summary": summary,
+        "wait_cause_chain_details": details,
+        "wait_cause_chain_total_time": total_time,
+        "wait_cause_chain_explained_time": explained_time,
+        "wait_cause_chain_incomplete_time": incomplete_time,
+        "wait_cause_chain_coverage_rate": coverage_rate,
     }
 
 
@@ -808,6 +960,7 @@ def analyze_schedule_v2(
     wait_summary = _compute_wait_summary(rows, target)
     wait_classification = _compute_wait_classification(rows, target)
     capacity_over_takt_summary = _compute_capacity_over_takt_summary(rows, target)
+    wait_cause_chain_summary = _compute_wait_cause_chain_summary(rows, target)
     station_summary = _compute_station_summary(rows, target)
     car_type_summary = _compute_car_type_summary(rows)
 
@@ -833,6 +986,7 @@ def analyze_schedule_v2(
         **wait_summary,
         **wait_classification,
         **capacity_over_takt_summary,
+        **wait_cause_chain_summary,
         **overflow_summary,
         **blocking_summary,
         **batch_overrun_summary,

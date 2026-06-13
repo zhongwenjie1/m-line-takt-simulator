@@ -1,0 +1,40 @@
+{
+  "round": "v2.9-round6A-6B",
+  "quantity": {
+    "scope": "A276/B306/C566全部1148台",
+    "actual_wait": 239975.5,
+    "excess_wait": 5430.0,
+    "cause_chain_total": 5430.0,
+    "coverage_rate": 1.0,
+    "incomplete_time": 0.0,
+    "cause_chains": [
+      {"waiting_station": "电检1", "direct_blocking_station": "电检2", "terminal_cause": "小跑道前车占用", "event_count": 78, "wait_time": 3384.0},
+      {"waiting_station": "空气悬挂+快充", "direct_blocking_station": "四轮定位上、下", "terminal_cause": "ARHUD+慢充 C超节拍加工占用", "event_count": 70, "wait_time": 1230.0},
+      {"waiting_station": "空气悬挂+快充", "direct_blocking_station": "四轮定位上、下", "terminal_cause": "四轮定位上、下 C超节拍加工占用", "event_count": 112, "wait_time": 496.5},
+      {"waiting_station": "空气悬挂+快充", "direct_blocking_station": "四轮定位上、下", "terminal_cause": "四轮定位上、下 B超节拍加工占用", "event_count": 40, "wait_time": 179.5},
+      {"waiting_station": "L2++", "direct_blocking_station": "电检1", "terminal_cause": "小跑道前车占用", "event_count": 19, "wait_time": 140.0}
+    ]
+  },
+  "ratio_full_schedule": {
+    "scope": "A:B:C=2:3:5全部1240台",
+    "actual_wait": 238387.0,
+    "excess_wait": 3768.5,
+    "cause_chain_total": 3768.5,
+    "coverage_rate": 1.0,
+    "incomplete_time": 0.0
+  },
+  "ratio_69000_second_window": {
+    "scope": "A:B:C=2:3:5，截止69000秒",
+    "actual_wait": 199015.5,
+    "excess_wait": 3126.0,
+    "cause_chain_total": 3126.0,
+    "coverage_rate": 1.0,
+    "incomplete_time": 0.0,
+    "cause_chains": [
+      {"waiting_station": "电检1", "direct_blocking_station": "电检2", "terminal_cause": "小跑道前车占用", "event_count": 51, "wait_time": 1370.0},
+      {"waiting_station": "空气悬挂+快充", "direct_blocking_station": "四轮定位上、下", "terminal_cause": "ARHUD+慢充 C超节拍加工占用", "event_count": 103, "wait_time": 1284.5},
+      {"waiting_station": "空气悬挂+快充", "direct_blocking_station": "四轮定位上、下", "terminal_cause": "四轮定位上、下 C超节拍加工占用", "event_count": 105, "wait_time": 471.5}
+    ]
+  },
+  "schedule_time_chain_unchanged": true
+}

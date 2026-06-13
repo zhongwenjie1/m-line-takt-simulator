@@ -480,6 +480,177 @@ def _schedule_arrival_fcfs(steps: List[Dict[str, Any]],
                 best = item
         return best
 
+    def waiting_step_for_car(car: int) -> Optional[int]:
+        state = states[car]
+        route = routes[car]
+        route_pos = int(state.get("route_pos", 0))
+        if route_pos >= len(route):
+            return None
+        step_index = route[route_pos]
+        if any(waiting_car == car for _, waiting_car in waiting_by_step[step_index]):
+            return step_index
+        return None
+
+    def direct_wait_blocker(car: int, step_index: int, now: float) -> Dict[str, Any]:
+        """Describe the concrete object preventing a waiting car from advancing."""
+        step = steps[step_index]
+        state = states[car]
+        queue = waiting_by_step[step_index]
+        scope = str(step.get("line_scope", "") or "")
+        if scope != "双线" and queue:
+            ready_time, first_car = min(queue)
+            if ready_time <= now + epsilon and first_car != car:
+                return {
+                    "blocker_car": first_car,
+                    "block_type": "queue_order",
+                    "blocked_station": str(step.get("display", "") or ""),
+                    "blocked_resource": str(step.get("resource_key", "") or ""),
+                }
+
+        duration = pick_duration(step, state["car_type"])
+        candidates = candidate_lines(step_index, state.get("current_line", ""), state["car_type"])
+        blockers: List[Dict[str, Any]] = []
+        for line_no in candidates:
+            slot_owner = station_slot_owner.get((step_index, line_no))
+            if slot_owner is not None and slot_owner != car:
+                blockers.append({
+                    "blocker_car": slot_owner,
+                    "block_type": "station_slot",
+                    "blocked_station": str(step.get("display", "") or ""),
+                    "blocked_resource": f"{step.get('display', '')}::{line_no}车位",
+                })
+                continue
+            if duration <= 0:
+                continue
+            key = str(step.get("resource_key", "") or "")
+            tokens = (
+                [(key, line_no)]
+                if scope == "双线"
+                else [(key, token_name) for token_name in resource_tokens.get(key, [])]
+            )
+            owners = sorted({resource_owner.get(token) for token in tokens if resource_owner.get(token) is not None})
+            for owner in owners:
+                if owner == car:
+                    continue
+                blockers.append({
+                    "blocker_car": owner,
+                    "block_type": "processing_resource",
+                    "blocked_station": str(step.get("display", "") or ""),
+                    "blocked_resource": key,
+                })
+
+        if not blockers:
+            return {
+                "blocker_car": None,
+                "block_type": "unresolved",
+                "blocked_station": str(step.get("display", "") or ""),
+                "blocked_resource": str(step.get("resource_key", "") or ""),
+            }
+        blockers.sort(key=lambda item: (int(item["blocker_car"]), item["block_type"], item["blocked_resource"]))
+        return blockers[0]
+
+    def wait_cause_chain(car: int, step_index: int, now: float) -> Dict[str, Any]:
+        """Follow direct blockers until the active terminal occupation is reached."""
+        chain: List[Dict[str, Any]] = []
+        visited = {car}
+        current_car = car
+        current_step = step_index
+        while True:
+            direct = direct_wait_blocker(current_car, current_step, now)
+            blocker_car = direct.get("blocker_car")
+            chain.append({
+                **direct,
+                "waiting_car": current_car,
+            })
+            if blocker_car is None:
+                return {
+                    "chain": chain,
+                    "chain_complete": False,
+                    "terminal_type": "unresolved",
+                    "terminal_car": None,
+                    "terminal_station": direct.get("blocked_station", ""),
+                    "terminal_resource": direct.get("blocked_resource", ""),
+                }
+            blocker_car = int(blocker_car)
+            if blocker_car in visited:
+                return {
+                    "chain": chain,
+                    "chain_complete": False,
+                    "terminal_type": "cycle",
+                    "terminal_car": blocker_car,
+                    "terminal_station": direct.get("blocked_station", ""),
+                    "terminal_resource": direct.get("blocked_resource", ""),
+                }
+            visited.add(blocker_car)
+            blocker_state = states[blocker_car]
+            blocker_row = blocker_state.get("current_row")
+            blocker_wait_step = waiting_step_for_car(blocker_car)
+            if blocker_row is None:
+                return {
+                    "chain": chain,
+                    "chain_complete": False,
+                    "terminal_type": "unresolved",
+                    "terminal_car": blocker_car,
+                    "terminal_station": direct.get("blocked_station", ""),
+                    "terminal_resource": direct.get("blocked_resource", ""),
+                }
+            if blocker_wait_step is not None and float(blocker_row.get("svc_finish", 0.0)) <= now + epsilon:
+                current_car = blocker_car
+                current_step = blocker_wait_step
+                continue
+
+            duration = float(blocker_row.get("dur", 0.0) or 0.0)
+            capacity = max(1, int(blocker_row.get("capacity", 1) or 1))
+            capacity_limit = capacity * launch_takt if launch_takt > 0 else 0.0
+            over_takt = launch_takt > 0 and duration > capacity_limit + epsilon
+            terminal_type = "over_takt_processing" if over_takt else "resource_occupation"
+            return {
+                "chain": chain,
+                "chain_complete": True,
+                "terminal_type": terminal_type,
+                "terminal_car": blocker_car,
+                "terminal_car_type": blocker_state.get("car_type", ""),
+                "terminal_station": str(blocker_row.get("step_display", "") or ""),
+                "terminal_resource": str(blocker_row.get("resource_key", "") or direct.get("blocked_resource", "")),
+                "terminal_start": float(blocker_row.get("start", now) or now),
+                "terminal_finish": float(blocker_row.get("svc_finish", now) or now),
+                "terminal_duration": duration,
+                "terminal_capacity_limit": capacity_limit,
+            }
+
+    def append_wait_cause_slice(row: Dict[str, Any], start: float, end: float, cause: Dict[str, Any]) -> None:
+        if end <= start + epsilon:
+            return
+        slices = row.setdefault("wait_cause_slices", [])
+        signature = (
+            tuple((item.get("waiting_car"), item.get("blocker_car"), item.get("block_type"), item.get("blocked_station"), item.get("blocked_resource")) for item in cause.get("chain", [])),
+            cause.get("chain_complete"), cause.get("terminal_type"), cause.get("terminal_car"),
+            cause.get("terminal_station"), cause.get("terminal_resource"),
+        )
+        if slices and slices[-1].get("signature") == signature and abs(float(slices[-1]["end"]) - start) <= epsilon:
+            slices[-1]["end"] = end
+            slices[-1]["duration"] = end - float(slices[-1]["start"])
+            return
+        slices.append({
+            "start": start,
+            "end": end,
+            "duration": end - start,
+            **cause,
+            "signature": signature,
+        })
+
+    def record_wait_cause_slices(start: float, end: float) -> None:
+        """Record one immutable cause slice for every vehicle blocked in this interval."""
+        for car, state in states.items():
+            row = state.get("current_row")
+            if row is None or float(row.get("svc_finish", 0.0)) > start + epsilon:
+                continue
+            step_index = waiting_step_for_car(car)
+            if step_index is None:
+                continue
+            cause = wait_cause_chain(car, step_index, start)
+            append_wait_cause_slice(row, start, end, cause)
+
     rows: List[Dict[str, Any]] = []
     current_time = 0.0
     max_time = 0.0
@@ -546,6 +717,7 @@ def _schedule_arrival_fcfs(steps: List[Dict[str, Any]],
                     "svc_finish": current_time + duration,
                     "depart": current_time + duration,
                     "block_wait": 0.0,
+                    "wait_cause_slices": [],
                 }
                 rows.append(row)
                 state["current_row"] = row
@@ -562,11 +734,15 @@ def _schedule_arrival_fcfs(steps: List[Dict[str, Any]],
             next_time = events[0][0]
             if next_time <= current_time + epsilon:
                 continue
+            record_wait_cause_slices(current_time, next_time)
             current_time = next_time
             continue
         blocked = [car for car, state in states.items() if not state["done"]]
         raise RuntimeError(f"排程发生资源死锁，未完成车辆：{blocked[:10]}")
 
+    for row in rows:
+        for cause_slice in row.get("wait_cause_slices", []) or []:
+            cause_slice.pop("signature", None)
     rows.sort(key=lambda row: (int(row["car"]), int(row["step_seq"])))
     return rows, max_time
 

@@ -359,8 +359,10 @@ class ExportTicketWindow(QMainWindow):
         self.lbl_vehicle_summary.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.lbl_vehicle_summary.setWordWrap(True)
         self.lbl_vehicle_summary.setTextFormat(Qt.RichText)
-        self.lbl_vehicle_summary.setMinimumHeight(120)
-        self.lbl_vehicle_summary.setMaximumHeight(155)
+        self.lbl_vehicle_summary.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.lbl_vehicle_summary.setOpenExternalLinks(False)
+        self.lbl_vehicle_summary.setMinimumHeight(175)
+        self.lbl_vehicle_summary.setMaximumHeight(225)
         self.lbl_vehicle_summary.setStyleSheet(
             "background: #f7f9fc;"
             "border: 1px dashed #cbd5e1;"
@@ -634,6 +636,7 @@ class ExportTicketWindow(QMainWindow):
         self.btn_analyze.clicked.connect(self.do_analyze)
         self.btn_export.clicked.connect(self.do_export)
         self.btn_model_result_explanation.clicked.connect(self._show_model_result_explanation_dialog)
+        self.lbl_vehicle_summary.linkActivated.connect(self._on_vehicle_summary_link_activated)
         self.act_help.triggered.connect(self.show_help)
         self.btn_sim_play.clicked.connect(self._start_simulation)
         self.btn_sim_pause.clicked.connect(self._pause_simulation)
@@ -833,10 +836,12 @@ class ExportTicketWindow(QMainWindow):
         """刷新仿真控制栏中的关键判定信息。"""
         if not hasattr(self, "lbl_sim_total_wait"):
             return
-        analysis = getattr(self, "last_analysis", None)
-        summary = analysis.get("summary", {}) if isinstance(analysis, dict) else {}
-        blocking_time = self._fmt_analysis_num(summary.get("total_wait", 0.0))
-        self.lbl_sim_total_wait.setText(f"累计阻塞：{blocking_time}s")
+        target_takt = float(self.spn_target_takt.value()) if hasattr(self, "spn_target_takt") else 0.0
+        metrics = self._build_wait_display_metrics(
+            float(getattr(self, "sim_time", 0.0) or 0.0), target_takt
+        )
+        actual_wait = self._fmt_analysis_num(metrics.get("total_actual_wait", 0.0))
+        self.lbl_sim_total_wait.setText(f"累计实际等待：{actual_wait}s")
     def _sim_speed_value(self) -> float:
         """读取仿真倍速。"""
         if not hasattr(self, "cmb_sim_speed"):
@@ -965,7 +970,48 @@ class ExportTicketWindow(QMainWindow):
         QApplication.clipboard().setText("\n".join(lines))
         self.status.showMessage("车辆日志已复制到剪贴板", 3000)
 
-    def _show_vehicle_log_placeholder(self):
+    def _on_vehicle_summary_link_activated(self, link):
+        if str(link or "") == "wait-cause-details":
+            self._show_vehicle_log_placeholder(initial_tab="cause")
+
+    def _build_wait_cause_log_rows(self):
+        """整理当前统计范围内的节拍外等待真因明细。"""
+        if not getattr(self, "last_schedule_rows", None):
+            return [], []
+        realtime = self._build_realtime_model_result(float(getattr(self, "sim_time", 0.0) or 0.0))
+        details = realtime.get("cause_chain_details", []) or []
+        columns = [
+            "等待车辆", "车型", "等待发生工程", "等待开始(s)", "等待结束(s)", "本段等待(s)",
+            "直接阻挡车辆", "直接阻挡工程", "直接阻挡资源", "真因车辆", "等待真因", "阻挡证据链",
+        ]
+        output = []
+        for item in sorted(details, key=lambda value: (float(value.get("wait_start", 0.0)), int(value.get("car", 0) or 0))):
+            chain_parts = []
+            for node in item.get("chain", []) or []:
+                waiting_car = node.get("waiting_car")
+                blocker_car = node.get("blocker_car")
+                station = str(node.get("blocked_station", "") or "未知工程")
+                if blocker_car is None:
+                    chain_parts.append(f"Car#{waiting_car} 等待 {station}（未解析）")
+                else:
+                    chain_parts.append(f"Car#{waiting_car} 等 Car#{blocker_car} 释放 {station}")
+            output.append([
+                f"Car#{item.get('car', '')}",
+                str(item.get("car_type", "") or ""),
+                str(item.get("waiting_station", "") or ""),
+                self._fmt_vehicle_log_value(item.get("wait_start")),
+                self._fmt_vehicle_log_value(item.get("wait_end")),
+                self._fmt_vehicle_log_value(item.get("wait_time")),
+                "" if item.get("direct_blocker_car") is None else f"Car#{item.get('direct_blocker_car')}",
+                str(item.get("direct_blocking_station", "") or ""),
+                str(item.get("direct_blocking_resource", "") or ""),
+                "" if item.get("terminal_car") is None else f"Car#{item.get('terminal_car')}",
+                str(item.get("terminal_cause", "") or ""),
+                " → ".join(chain_parts),
+            ])
+        return columns, output
+
+    def _show_vehicle_log_placeholder(self, initial_tab="vehicle"):
         rows = getattr(self, "last_schedule_rows", []) or []
         if not rows:
             QMessageBox.information(self, "车辆明细 / 调试日志", "请先点击“分析当前排程”生成车辆日志。")
@@ -987,6 +1033,9 @@ class ExportTicketWindow(QMainWindow):
         info.setStyleSheet("color:#475569;font-size:12px;")
         layout.addWidget(info)
 
+        tabs = QTabWidget(dialog)
+        layout.addWidget(tabs, 1)
+
         text_edit = QPlainTextEdit(dialog)
         text_edit.setReadOnly(True)
         text_edit.setPlainText(self._build_schedule_debug_log(rows, limit=9999))
@@ -999,7 +1048,23 @@ class ExportTicketWindow(QMainWindow):
             "border: 1px solid #cbd5e1;"
             "}"
         )
-        layout.addWidget(text_edit, 1)
+        tabs.addTab(text_edit, "车辆过程")
+
+        cause_columns, cause_rows = self._build_wait_cause_log_rows()
+        cause_table = QTableWidget(len(cause_rows), len(cause_columns), dialog)
+        cause_table.setHorizontalHeaderLabels(cause_columns)
+        cause_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        cause_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        cause_table.setAlternatingRowColors(True)
+        cause_table.verticalHeader().setVisible(False)
+        cause_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        cause_table.horizontalHeader().setStretchLastSection(True)
+        for row_index, values in enumerate(cause_rows):
+            for column_index, value in enumerate(values):
+                cause_table.setItem(row_index, column_index, QTableWidgetItem(str(value)))
+        tabs.addTab(cause_table, f"等待真因（{len(cause_rows)}段）")
+        if initial_tab == "cause":
+            tabs.setCurrentWidget(cause_table)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
@@ -1009,7 +1074,13 @@ class ExportTicketWindow(QMainWindow):
         button_row.addWidget(btn_close)
         layout.addLayout(button_row)
 
-        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(text_edit.toPlainText()))
+        def _copy_current_tab():
+            if tabs.currentWidget() is cause_table:
+                self._copy_vehicle_log_to_clipboard(cause_columns, cause_rows)
+            else:
+                QApplication.clipboard().setText(text_edit.toPlainText())
+
+        btn_copy.clicked.connect(_copy_current_tab)
         btn_close.clicked.connect(dialog.accept)
 
         dialog.exec()
@@ -1022,6 +1093,7 @@ class ExportTicketWindow(QMainWindow):
             return
         self.sim_time = min(total, float(getattr(self, "sim_time", 0.0) or 0.0) + 0.1 * self._sim_speed_value())
         self._update_sim_time_label()
+        self._update_sim_total_wait_label()
         self._update_sim_view()
         self._draw_sim_scene()
         self._update_realtime_model_result()
@@ -2457,6 +2529,143 @@ class ExportTicketWindow(QMainWindow):
         # 固定列宽，不再自动根据内容调整，避免每次分析后表格宽度跳动
         # self.tbl_station_analysis.resizeColumnsToContents()
 
+    def _build_wait_display_metrics(self, cutoff_time: float, target_takt: float) -> dict:
+        """按当前统计截止时间汇总实际等待、节拍外等待及其真因。"""
+        rows = getattr(self, "last_schedule_rows", []) or []
+        try:
+            cutoff = max(0.0, float(cutoff_time or 0.0))
+        except Exception:
+            cutoff = 0.0
+        try:
+            target = max(0.0, float(target_takt or 0.0))
+        except Exception:
+            target = 0.0
+
+        actual_by_station = {}
+        excess_by_station = {}
+        cause_groups = {}
+        cause_details = []
+        total_actual = 0.0
+        total_excess = 0.0
+        incomplete_time = 0.0
+
+        for row in rows:
+            wait_start = self._sim_row_service_finish(row)
+            wait_end = self._sim_row_depart(row)
+            if cutoff <= wait_start + 1e-9 or wait_end <= wait_start + 1e-9:
+                continue
+            occurred_end = min(cutoff, wait_end)
+            actual_wait = max(0.0, occurred_end - wait_start)
+            if actual_wait <= 1e-9:
+                continue
+
+            station = self._sim_row_station(row) or "未知工程"
+            total_actual += actual_wait
+            actual_by_station[station] = actual_by_station.get(station, 0.0) + actual_wait
+
+            try:
+                capacity = max(1, int(float(row.get("capacity", row.get("device_count", 1)) or 1)))
+            except Exception:
+                capacity = 1
+            holding_limit = capacity * target
+            excess_start = wait_start + holding_limit
+            excess_wait = max(0.0, occurred_end - excess_start)
+            if excess_wait <= 1e-9:
+                continue
+            total_excess += excess_wait
+            excess_by_station[station] = excess_by_station.get(station, 0.0) + excess_wait
+
+            event_keys = set()
+            covered = 0.0
+            for cause_slice in row.get("wait_cause_slices", []) or []:
+                slice_start = max(excess_start, float(cause_slice.get("start", excess_start) or excess_start))
+                slice_end = min(occurred_end, float(cause_slice.get("end", occurred_end) or occurred_end))
+                duration = max(0.0, slice_end - slice_start)
+                if duration <= 1e-9:
+                    continue
+                covered += duration
+                chain = list(cause_slice.get("chain", []) or [])
+                direct = chain[0] if chain else {}
+                direct_station = str(direct.get("blocked_station", "") or "未知工程")
+                terminal_type = str(cause_slice.get("terminal_type", "") or "unresolved")
+                terminal_station = str(cause_slice.get("terminal_station", "") or "未知工程")
+                terminal_car_type = str(cause_slice.get("terminal_car_type", "") or "")
+                complete = bool(cause_slice.get("chain_complete", False))
+                if not complete:
+                    terminal_cause = "原因链不完整"
+                elif terminal_type == "over_takt_processing":
+                    suffix = f" {terminal_car_type}" if terminal_car_type else ""
+                    terminal_cause = f"{terminal_station}{suffix}超节拍加工占用"
+                else:
+                    terminal_cause = f"{terminal_station}前车占用"
+
+                key = (station, direct_station, terminal_cause)
+                item = cause_groups.setdefault(key, {
+                    "waiting_station": station,
+                    "direct_blocking_station": direct_station,
+                    "terminal_cause": terminal_cause,
+                    "event_count": 0,
+                    "wait_time": 0.0,
+                    "chain_complete": complete,
+                })
+                item["wait_time"] += duration
+                event_keys.add(key)
+                cause_details.append({
+                    "car": row.get("car"),
+                    "car_type": str(row.get("car_type", "") or ""),
+                    "waiting_station": station,
+                    "wait_start": slice_start,
+                    "wait_end": slice_end,
+                    "wait_time": duration,
+                    "direct_blocker_car": direct.get("blocker_car"),
+                    "direct_blocking_station": direct_station,
+                    "direct_blocking_resource": str(direct.get("blocked_resource", "") or ""),
+                    "terminal_car": cause_slice.get("terminal_car"),
+                    "terminal_station": terminal_station,
+                    "terminal_resource": str(cause_slice.get("terminal_resource", "") or ""),
+                    "terminal_cause": terminal_cause,
+                    "chain_complete": complete,
+                    "chain": chain,
+                })
+            for key in event_keys:
+                cause_groups[key]["event_count"] += 1
+            if covered + 1e-9 < excess_wait:
+                missing = excess_wait - covered
+                incomplete_time += missing
+                key = (station, "未知工程", "原因链不完整")
+                item = cause_groups.setdefault(key, {
+                    "waiting_station": station,
+                    "direct_blocking_station": "未知工程",
+                    "terminal_cause": "原因链不完整",
+                    "event_count": 0,
+                    "wait_time": 0.0,
+                    "chain_complete": False,
+                })
+                item["event_count"] += 1
+                item["wait_time"] += missing
+
+        def _station_items(values):
+            return [
+                {"station": station, "wait_time": wait_time}
+                for station, wait_time in sorted(values.items(), key=lambda item: (-item[1], item[0]))
+            ]
+
+        cause_summary = sorted(
+            cause_groups.values(),
+            key=lambda item: (-float(item["wait_time"]), -int(item["event_count"]), item["waiting_station"]),
+        )
+        coverage = (total_excess - incomplete_time) / total_excess if total_excess > 0 else 1.0
+        return {
+            "total_actual_wait": total_actual,
+            "actual_wait_by_station": _station_items(actual_by_station),
+            "total_excess_wait": total_excess,
+            "excess_wait_by_station": _station_items(excess_by_station),
+            "cause_chain_summary": cause_summary,
+            "cause_chain_details": cause_details,
+            "cause_chain_coverage_rate": coverage,
+            "cause_chain_incomplete_time": incomplete_time,
+        }
+
     def _build_realtime_model_result(self, current_time: float) -> dict:
         rows = getattr(self, "last_schedule_rows", []) or []
         try:
@@ -2628,7 +2837,7 @@ class ExportTicketWindow(QMainWindow):
                     rec["vehicle_count"] += 1
                     if car_type in rec["by_type"]:
                         rec["by_type"][car_type] += 1
-                    rec["max_over"] = max(rec["max_over"], station_capacity_takt - target_takt)
+                    rec["max_over"] = max(rec["max_over"], duration - capacity * target_takt)
                 if vehicle_ok:
                     qualified_vehicle_count += 1
         capacity_over_stations = sorted(
@@ -2671,6 +2880,7 @@ class ExportTicketWindow(QMainWindow):
             else:
                 total_blocking_so_far += block_wait
         blocking_hint = self._build_realtime_blocking_hint(blocking_time)
+        wait_metrics = self._build_wait_display_metrics(blocking_time, target_takt)
 
         return {
             "result": result,
@@ -2684,6 +2894,14 @@ class ExportTicketWindow(QMainWindow):
             "overall_takt": overall_takt,
             "target_takt": target_takt,
             "total_blocking_so_far": total_blocking_so_far,
+            "total_actual_wait": wait_metrics.get("total_actual_wait", 0.0),
+            "actual_wait_by_station": wait_metrics.get("actual_wait_by_station", []),
+            "total_excess_wait": wait_metrics.get("total_excess_wait", 0.0),
+            "excess_wait_by_station": wait_metrics.get("excess_wait_by_station", []),
+            "cause_chain_summary": wait_metrics.get("cause_chain_summary", []),
+            "cause_chain_details": wait_metrics.get("cause_chain_details", []),
+            "cause_chain_coverage_rate": wait_metrics.get("cause_chain_coverage_rate", 1.0),
+            "cause_chain_incomplete_time": wait_metrics.get("cause_chain_incomplete_time", 0.0),
             "blocking_hint": blocking_hint,
             "current_time": current,
             "all_vehicles": all_vehicles,
@@ -2854,31 +3072,43 @@ class ExportTicketWindow(QMainWindow):
         target_takt_text = self._fmt_analysis_num(target_takt_value)
         overall_takt = realtime.get("overall_takt")
         overall_takt_text = "—" if overall_takt is None else self._fmt_analysis_num(overall_takt)
-        blocking_so_far = self._fmt_analysis_num(realtime.get("total_blocking_so_far", 0.0))
+        actual_wait = float(realtime.get("total_actual_wait", 0.0) or 0.0)
+        excess_wait = float(realtime.get("total_excess_wait", 0.0) or 0.0)
+        actual_wait_text = self._fmt_analysis_num(actual_wait)
+        excess_wait_text = self._fmt_analysis_num(excess_wait)
         current_time = self._fmt_analysis_num(realtime.get("current_time", 0.0))
         risk_parts = []
         capacity_over_stations = realtime.get("capacity_over_stations", []) or []
         if capacity_over_stations:
-            station_parts = [
-                str(item.get("station", "") or "岗位")
-                for item in capacity_over_stations[:2]
-            ]
-            station_text = "、".join(station_parts)
-            if len(capacity_over_stations) > 2:
-                station_text += " 等"
-            risk_parts.append(f"工位能力超节拍：{station_text}")
-        blocking_hint = str(realtime.get("blocking_hint", "") or "")
-        if blocking_hint and blocking_hint != "阻塞工程：无":
-            risk_parts.append(blocking_hint)
-        try:
-            overall_takt_value = float(overall_takt) if overall_takt is not None else None
-            target_takt_float = float(target_takt_value or 0.0)
-        except Exception:
-            overall_takt_value = None
-            target_takt_float = 0.0
-        if overall_takt_value is not None and target_takt_float > 0 and overall_takt_value > target_takt_float:
-            risk_parts.append(f"整体节拍 {overall_takt_text}/{target_takt_text}")
+            process_parts = []
+            for item in capacity_over_stations:
+                station = str(item.get("station", "") or "岗位")
+                by_type = item.get("by_type", {}) or {}
+                types = [vehicle_type for vehicle_type in ("A", "B", "C") if int(by_type.get(vehicle_type, 0) or 0) > 0]
+                type_text = "/".join(types)
+                over_text = self._fmt_analysis_num(item.get("max_over", 0.0))
+                process_parts.append(f"{station} {type_text} {over_text}s/台".strip())
+            risk_parts.append(f"超节拍工程：{'；'.join(process_parts)}")
+        excess_station_items = realtime.get("excess_wait_by_station", []) or []
+        if excess_station_items:
+            station_text = "；".join(
+                f"{item.get('station', '未知工程')} {self._fmt_analysis_num(item.get('wait_time', 0.0))}s"
+                for item in excess_station_items[:3]
+            )
+            risk_parts.insert(0, f"节拍外等待发生工程：{station_text}")
         risk_hint_text = "｜".join(risk_parts) if risk_parts else "暂无明显风险"
+
+        cause_chain_items = realtime.get("cause_chain_summary", []) or []
+        cause_chain_parts = []
+        for item in cause_chain_items[:3]:
+            cause_chain_parts.append(
+                f"{item.get('terminal_cause', '原因链不完整')} → "
+                f"{item.get('direct_blocking_station', '未知工程')}无法放行 → "
+                f"{item.get('waiting_station', '未知工程')}发生等待｜"
+                f"{int(item.get('event_count', 0) or 0)}次｜"
+                f"{self._fmt_analysis_num(item.get('wait_time', 0.0))}s"
+            )
+        cause_chain_text = "；".join(cause_chain_parts) if cause_chain_parts else "暂无节拍外等待真因"
 
         target_scope_vehicles = list(realtime.get("target_scope_vehicles", []) or [])
         all_vehicles = list(realtime.get("all_vehicles", []) or [])
@@ -2929,9 +3159,14 @@ class ExportTicketWindow(QMainWindow):
             "next_car_no": next_output_vehicle.get("car_key") if next_output_vehicle else None,
             "next_car_out": next_output_vehicle.get("car_out") if next_output_vehicle else None,
             "overall_takt": overall_takt,
-            "total_block_wait": realtime.get("total_blocking_so_far", 0.0),
+            "total_block_wait": actual_wait,
+            "total_actual_wait": actual_wait,
+            "total_excess_wait": excess_wait,
+            "excess_wait_by_station": excess_station_items,
+            "cause_chain_summary": cause_chain_items,
+            "cause_chain_coverage_rate": realtime.get("cause_chain_coverage_rate", 1.0),
             "risk_text": risk_hint_text or "暂无明显风险",
-            "blocking_station_text": blocking_hint,
+            "blocking_station_text": risk_hint_text,
         }
 
         model_cards = [
@@ -2939,7 +3174,7 @@ class ExportTicketWindow(QMainWindow):
             _metric_card("达标车辆", f"{qualified_vehicle_count}/{denominator_vehicle_count}"),
             _metric_card("达标率", qualified_rate_text),
             _metric_card("整体节拍", f"{overall_takt_text}/{target_takt_text}"),
-            _metric_card("累计阻塞", f"{blocking_so_far}s"),
+            _metric_card("累计节拍外等待", f"{excess_wait_text}s"),
         ]
         right_html = (
             "<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;padding-right:92px;'>模型结果</div>"
@@ -2950,10 +3185,14 @@ class ExportTicketWindow(QMainWindow):
             + "</tr></table>"
             "</div>"
             f"<div style='font-size:11px;color:#334155;line-height:1.3;margin-top:2px;margin-bottom:0;'>"
-            f"当前仿真时间 {current_time}s｜统计口径：整体节拍=统计对象全部OUT间隔平均；实时节拍见仿真栏"
+            f"当前仿真时间 {current_time}s｜累计实际等待 {actual_wait_text}s｜实时节拍见仿真栏"
             "</div>"
             f"<div style='font-size:12px;color:#334155;line-height:1.4;margin-top:3px;'>"
             f"<span style='font-weight:700;color:#0f172a;'>风险提示：</span>{risk_hint_text}"
+            "</div>"
+            f"<div style='font-size:11px;color:#475569;line-height:1.35;margin-top:3px;'>"
+            f"<span style='font-weight:700;color:#0f172a;'>等待真因：</span>{cause_chain_text} "
+            "<a href='wait-cause-details' style='color:#2563eb;text-decoration:none;'>查看车辆明细</a>"
             "</div>"
         )
         
@@ -3015,7 +3254,8 @@ class ExportTicketWindow(QMainWindow):
         last_output_car_no = summary.get("last_output_car_no")
         last_output_car_out = summary.get("last_output_car_out")
         overall_takt = summary.get("overall_takt")
-        total_block_wait = summary.get("total_block_wait", 0.0)
+        total_actual_wait = summary.get("total_actual_wait", summary.get("total_block_wait", 0.0))
+        total_excess_wait = summary.get("total_excess_wait", 0.0)
         risk_text = str(summary.get("risk_text", "") or "暂无明显风险")
         analysis_time_minutes = summary.get("analysis_time_minutes", 0.0)
         analysis_time_seconds = summary.get("analysis_time_seconds", 0.0)
@@ -3053,7 +3293,10 @@ class ExportTicketWindow(QMainWindow):
                 f"所以整体节拍显示为 {_fmt_num(overall_takt)}/{_fmt_num(target_takt)}。"
             )
 
-        block_calc = f"本次累计 block_wait = {_fmt_num(total_block_wait)}s，所以累计阻塞为 {_fmt_num(total_block_wait)}s。"
+        wait_calc = (
+            f"本次所有车辆在工程完成后实际停留等待合计为 {_fmt_num(total_actual_wait)}s；"
+            f"扣除各等待工程可接纳上限后，累计节拍外等待为 {_fmt_num(total_excess_wait)}s。"
+        )
         risk_calc = f"当前风险提示显示为：{escape(risk_text)}。"
 
         return f"""
@@ -3084,14 +3327,14 @@ class ExportTicketWindow(QMainWindow):
   <div>计算口径：整体节拍 =（最后一台 OUT 时间 - 第一台 OUT 时间）÷（下线车辆数 - 1）。</div>
   <div>本次计算：{overall_calc}</div>
 
-  <div style="margin-top:8px;"><b>5. 累计阻塞</b></div>
-  <div>表示：车辆在工位完成后，由于下游暂时不可接收而产生的等待时间累计。</div>
-  <div>计算口径：累计所有车辆在各工位上的 block_wait。</div>
-  <div>本次计算：{block_calc}</div>
+  <div style="margin-top:8px;"><b>5. 累计实际等待与累计节拍外等待</b></div>
+  <div>表示：累计实际等待是车辆加工完成后真实停留的总时间；累计节拍外等待是其中超过当前工程可接纳上限、无法在目标节拍内吸收的部分。</div>
+  <div>计算口径：可接纳上限 = 有效设备数 × 目标节拍；节拍外等待 = max（0，实际等待 - 可接纳上限）。</div>
+  <div>本次计算：{wait_calc}</div>
 
   <div style="margin-top:8px;"><b>6. 风险提示</b></div>
-  <div>表示：对当前模型结果中的主要关注点进行提示，包括工位能力超节拍、阻塞工程和整体节拍风险。</div>
-  <div>计算口径：根据工位能力节拍、阻塞工程和整体节拍风险生成提示。</div>
+  <div>表示：提示节拍外等待发生在哪里，以及哪些车型在具体工程的加工工时超过工程能力上限。</div>
+  <div>计算口径：等待发生工程与超节拍工程分开显示；整体节拍已在结果卡片中显示，不在此重复。</div>
   <div>本次计算：{risk_calc}</div>
 
   <div style="margin-top:10px; color:#475569;">
