@@ -1,0 +1,136 @@
+{
+  "assertions": "passed",
+  "minimal_arrival_first": {
+    "car1_start": 100.0,
+    "car2_start": 0.0,
+    "service_order": [
+      2,
+      1
+    ]
+  },
+  "quantity": {
+    "first_out": 1423.5,
+    "full_raw_block_wait": 239975.5,
+    "generated": 1148,
+    "last_out": 76152.5,
+    "overall_takt": 65.15170008718395,
+    "processing_capacity_violations": 0,
+    "sequence_first_30": "CCCBAAABCCCBBBCCAACCCCBBAACCCC",
+    "sequence_hash": "dac6086f3b896255eeb77cb82679b0334e49ab972a5e9ed6aa0cd4e6d347f08f",
+    "service_checks": {
+      "fcfs_violations": 0,
+      "launch_overtakes": 0,
+      "shared_or_single_stations": {
+        "小跑道": {
+          "average_wait_by_line": {
+            "1号线": 27.777003484320556,
+            "2号线": 27.09581881533101
+          },
+          "fcfs_violations": 0,
+          "line_counts": {
+            "1号线": 574,
+            "2号线": 574
+          },
+          "maximum_cumulative_line_difference": 3,
+          "maximum_same_line_run": 3,
+          "maximum_wait_by_line": {
+            "1号线": 101.0,
+            "2号线": 101.0
+          }
+        },
+        "引取": {
+          "average_wait_by_line": {
+            "1号线": 4028.0714285714284,
+            "2号线": 4035.452961672474
+          },
+          "fcfs_violations": 0,
+          "line_counts": {
+            "1号线": 574,
+            "2号线": 574
+          },
+          "maximum_cumulative_line_difference": 1,
+          "maximum_same_line_run": 1,
+          "maximum_wait_by_line": {
+            "1号线": 8111.0,
+            "2号线": 8109.0
+          }
+        }
+      }
+    },
+    "station_slot_overlaps": {
+      "maximum_overlap": {
+        "cars": [],
+        "line": "",
+        "seconds": 0.0,
+        "station": ""
+      },
+      "pair_count": 0,
+      "pair_types": {},
+      "processing_cars_entering_occupied_zero_node": 0
+    },
+    "within_69000_second_auxiliary_window": 1038
+  },
+  "ratio": {
+    "first_out": 861.0,
+    "full_raw_block_wait": 238387.0,
+    "generated": 1240,
+    "last_out": 83308.0,
+    "overall_takt": 66.54317998385795,
+    "processing_capacity_violations": 0,
+    "sequence_first_30": "AABBBCCCCCAABBBCCCCCAABBBCCCCC",
+    "sequence_hash": "4a9c4210b0fb754aea8cd01b586580c863c9117cc07c339cffdad48c4107d67e",
+    "service_checks": {
+      "fcfs_violations": 0,
+      "launch_overtakes": 0,
+      "shared_or_single_stations": {
+        "小跑道": {
+          "average_wait_by_line": {
+            "1号线": 31.730645161290322,
+            "2号线": 25.143548387096775
+          },
+          "fcfs_violations": 0,
+          "line_counts": {
+            "1号线": 620,
+            "2号线": 620
+          },
+          "maximum_cumulative_line_difference": 3,
+          "maximum_same_line_run": 3,
+          "maximum_wait_by_line": {
+            "1号线": 69.0,
+            "2号线": 86.5
+          }
+        },
+        "引取": {
+          "average_wait_by_line": {
+            "1号线": 4906.749193548387,
+            "2号线": 4904.604838709677
+          },
+          "fcfs_violations": 0,
+          "line_counts": {
+            "1号线": 620,
+            "2号线": 620
+          },
+          "maximum_cumulative_line_difference": 1,
+          "maximum_same_line_run": 1,
+          "maximum_wait_by_line": {
+            "1号线": 9922.5,
+            "2号线": 9920.5
+          }
+        }
+      }
+    },
+    "station_slot_overlaps": {
+      "maximum_overlap": {
+        "cars": [],
+        "line": "",
+        "seconds": 0.0,
+        "station": ""
+      },
+      "pair_count": 0,
+      "pair_types": {},
+      "processing_cars_entering_occupied_zero_node": 0
+    },
+    "within_69000_second_auxiliary_window": 1024
+  },
+  "round": "v2.9-round3-r10"
+}

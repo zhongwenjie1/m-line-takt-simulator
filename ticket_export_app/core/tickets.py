@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import heapq
 import hashlib
+from collections import defaultdict
 from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 from core.analysis import analyze_schedule_v2
@@ -301,6 +302,275 @@ def build_vehicle_sequence(cars: int,
     return vehicle_seq
 
 
+def _schedule_arrival_fcfs(steps: List[Dict[str, Any]],
+                           vehicle_seq: List[str],
+                           launch_takt: float) -> Tuple[List[Dict[str, Any]], float]:
+    """Event-based blocking flow scheduler with arrival-first resource service."""
+
+    def pick_duration(step: Dict[str, Any], car_type: str) -> float:
+        source = str(car_type or "A").strip().upper()
+        if source == "B":
+            return float(step.get("duration_b", step["duration"]))
+        if source == "C":
+            return float(step.get("duration_c", step["duration"]))
+        return float(step.get("duration_a", step["duration"]))
+
+    routes = {
+        car: [index for index, step in enumerate(steps) if pick_duration(step, car_type) >= 0]
+        for car, car_type in enumerate(vehicle_seq, start=1)
+    }
+
+    def upcoming_forced_line(start_index: int, car_type: str) -> str:
+        for future_step in steps[start_index:]:
+            if pick_duration(future_step, car_type) <= 0:
+                continue
+            scope = str(future_step.get("line_scope", "") or "")
+            if scope in ("1号线", "2号线"):
+                return scope
+        return ""
+
+    resource_tokens: Dict[str, List[str]] = {}
+    for step in steps:
+        key = str(step.get("resource_key", "") or "")
+        if key in resource_tokens:
+            continue
+        scope = str(step.get("line_scope", "") or "")
+        capacity = max(1, int(step.get("capacity", 1) or 1))
+        if scope == "双线":
+            resource_tokens[key] = (["1号线", "2号线"] + [
+                f"{index + 3}号线" for index in range(max(0, capacity - 2))
+            ])[:capacity]
+        else:
+            resource_tokens[key] = [f"资源{index + 1}" for index in range(capacity)]
+
+    resource_owner = {
+        (key, token): None
+        for key, tokens in resource_tokens.items()
+        for token in tokens
+    }
+    station_slot_owner: Dict[Tuple[int, str], Optional[int]] = {}
+    line_assignment_counts: Dict[Tuple[int, str], int] = defaultdict(int)
+    waiting_by_step: Dict[int, List[Tuple[float, int]]] = {
+        index: [] for index in range(len(steps))
+    }
+    events: List[Tuple[float, int, int]] = []  # time, kind(0=finish/1=launch), car
+    states: Dict[int, Dict[str, Any]] = {}
+    for car, car_type in enumerate(vehicle_seq, start=1):
+        launch_time = (car - 1) * launch_takt if launch_takt > 0 else 0.0
+        states[car] = {
+            "car_type": car_type,
+            "route_pos": 0,
+            "current_row": None,
+            "current_step": None,
+            "current_line": "",
+            "resource_token": None,
+            "done": False,
+        }
+        heapq.heappush(events, (launch_time, 1, car))
+
+    def candidate_lines(step_index: int, current_line: str, car_type: str) -> List[str]:
+        scope = str(steps[step_index].get("line_scope", "") or "")
+        if scope in ("1号线", "2号线"):
+            return [scope]
+        if current_line in ("1号线", "2号线"):
+            return [current_line]
+        forced = upcoming_forced_line(step_index + 1, car_type)
+        return [forced] if forced else ["1号线", "2号线"]
+
+    def free_resource_token(step: Dict[str, Any], line_no: str) -> Optional[Tuple[str, str]]:
+        key = str(step.get("resource_key", "") or "")
+        if str(step.get("line_scope", "") or "") == "双线":
+            token = (key, line_no)
+            return token if resource_owner.get(token) is None else None
+        for name in resource_tokens.get(key, []):
+            token = (key, name)
+            if resource_owner.get(token) is None:
+                return token
+        return None
+
+    def downstream_line_score(car: int, step_index: int, line_no: str, now: float):
+        """Prefer the line whose next physical slot can receive the car first."""
+        state = states[car]
+        route = routes[car]
+        next_route_pos = state["route_pos"] + 1
+        if next_route_pos >= len(route):
+            return (0.0, 0, line_assignment_counts[(step_index, line_no)], line_no)
+
+        next_step_index = route[next_route_pos]
+        owner = station_slot_owner.get((next_step_index, line_no))
+        if owner is None:
+            slot_delay = 0.0
+        else:
+            owner_row = states[owner].get("current_row")
+            finish = float(owner_row["svc_finish"]) if owner_row is not None else now
+            # A vehicle that has finished but is still in the slot is blocked by
+            # its downstream station, so that line is not currently releasable.
+            slot_delay = finish - now if finish > now else float("inf")
+
+        queued = sum(
+            1
+            for _, waiting_car in waiting_by_step[next_step_index]
+            if states[waiting_car].get("current_line") == line_no
+        )
+        return (
+            slot_delay,
+            queued,
+            line_assignment_counts[(step_index, line_no)],
+            line_no,
+        )
+
+    def available_assignment(car: int, step_index: int, now: float):
+        state = states[car]
+        step = steps[step_index]
+        duration = pick_duration(step, state["car_type"])
+        candidates = candidate_lines(step_index, state["current_line"], state["car_type"])
+        if len(candidates) > 1:
+            candidates.sort(key=lambda line: downstream_line_score(car, step_index, line, now))
+        for line_no in candidates:
+            if station_slot_owner.get((step_index, line_no)) is not None:
+                continue
+            token = None if duration <= 0 else free_resource_token(step, line_no)
+            if duration > 0 and token is None:
+                continue
+            return line_no, token, duration
+        return None
+
+    def release_current(car: int, depart: float) -> None:
+        state = states[car]
+        row = state["current_row"]
+        step_index = state["current_step"]
+        if row is None or step_index is None:
+            return
+        row["depart"] = depart
+        row["block_wait"] = max(0.0, depart - float(row["svc_finish"]))
+        station_slot_owner[(step_index, row["line_no"])] = None
+        if state["resource_token"] is not None:
+            resource_owner[state["resource_token"]] = None
+        state["current_row"] = None
+        state["current_step"] = None
+        state["resource_token"] = None
+
+    def enqueue_next(car: int, ready_time: float) -> None:
+        state = states[car]
+        route = routes[car]
+        if state["route_pos"] >= len(route):
+            release_current(car, ready_time)
+            state["done"] = True
+            return
+        heapq.heappush(waiting_by_step[route[state["route_pos"]]], (ready_time, car))
+
+    def choose_waiting(step_index: int, now: float):
+        queue = waiting_by_step[step_index]
+        if not queue:
+            return None
+        scope = str(steps[step_index].get("line_scope", "") or "")
+        # Shared/single resources are strict FCFS. Dual-line stations may start the
+        # earliest eligible car on either independent line.
+        candidate_indexes = [0] if scope != "双线" else range(len(queue))
+        best = None
+        for index in candidate_indexes:
+            ready_time, car = queue[index]
+            assignment = available_assignment(car, step_index, now)
+            if assignment is None:
+                if scope != "双线":
+                    return None
+                continue
+            item = (ready_time, car, index, assignment)
+            if best is None or item[:2] < best[:2]:
+                best = item
+        return best
+
+    rows: List[Dict[str, Any]] = []
+    current_time = 0.0
+    max_time = 0.0
+    completed = 0
+    epsilon = 1e-9
+
+    while completed < len(states):
+        if events and not any(waiting_by_step.values()):
+            current_time = max(current_time, events[0][0])
+
+        while events and events[0][0] <= current_time + epsilon:
+            event_time, kind, car = heapq.heappop(events)
+            state = states[car]
+            if kind == 1:
+                enqueue_next(car, event_time)
+            else:
+                before = state["done"]
+                enqueue_next(car, event_time)
+                if state["done"] and not before:
+                    completed += 1
+                    max_time = max(max_time, event_time)
+
+        made_progress = True
+        while made_progress:
+            made_progress = False
+            for step_index in range(len(steps)):
+                selected = choose_waiting(step_index, current_time)
+                if selected is None:
+                    continue
+                ready_time, car, queue_index, assignment = selected
+                if ready_time > current_time + epsilon:
+                    continue
+                queue = waiting_by_step[step_index]
+                queue.pop(queue_index)
+                heapq.heapify(queue)
+                line_no, token, duration = assignment
+                state = states[car]
+                if state["current_row"] is not None:
+                    release_current(car, current_time)
+                step = steps[step_index]
+                station_slot_owner[(step_index, line_no)] = car
+                line_assignment_counts[(step_index, line_no)] += 1
+                if token is not None:
+                    resource_owner[token] = car
+                theory_launch = (car - 1) * launch_takt if launch_takt > 0 else 0.0
+                row = {
+                    "car": car,
+                    "step_seq": step["seq"],
+                    "step_display": step["display"],
+                    "group": step["group"],
+                    "run_mode": step.get("run_mode", "单线单设备"),
+                    "capacity": int(step.get("capacity", 1) or 1),
+                    "device_count": int(step.get("device_count", step.get("capacity", 1)) or 1),
+                    "line_scope": str(step.get("line_scope", "") or ""),
+                    "resource_key": str(step.get("resource_key", "") or ""),
+                    "line_no": line_no,
+                    "car_type": state["car_type"],
+                    "duration_source": str(state["car_type"] or "A").strip().upper(),
+                    "theory_launch_time": theory_launch,
+                    "launch_takt": launch_takt,
+                    "launch_wait": max(0.0, current_time - theory_launch) if state["route_pos"] == 0 else 0.0,
+                    "dur": duration,
+                    "start": current_time,
+                    "svc_finish": current_time + duration,
+                    "depart": current_time + duration,
+                    "block_wait": 0.0,
+                }
+                rows.append(row)
+                state["current_row"] = row
+                state["current_step"] = step_index
+                state["resource_token"] = token
+                state["current_line"] = line_no
+                state["route_pos"] += 1
+                heapq.heappush(events, (current_time + duration, 0, car))
+                made_progress = True
+
+        if completed >= len(states):
+            break
+        if events:
+            next_time = events[0][0]
+            if next_time <= current_time + epsilon:
+                continue
+            current_time = next_time
+            continue
+        blocked = [car for car, state in states.items() if not state["done"]]
+        raise RuntimeError(f"排程发生资源死锁，未完成车辆：{blocked[:10]}")
+
+    rows.sort(key=lambda row: (int(row["car"]), int(row["step_seq"])))
+    return rows, max_time
+
+
 # ---------------- 调度（含 Zone + gate_buffer） ---------------- #
 def schedule(step_defs: List[Dict[str, Any]],
              cars: int,
@@ -376,6 +646,11 @@ def schedule(step_defs: List[Dict[str, Any]],
         launch_takt_value = 0.0
     if launch_takt_value < 0:
         launch_takt_value = 0.0
+
+    # Normal M-Line models have no legacy zone/gate constraints. Use event-based
+    # scheduling so shared and single resources can serve actual arrivals first.
+    if not zones and not gate_buffers:
+        return _schedule_arrival_fcfs(steps, vehicle_seq, launch_takt_value)
  
     def _initial_resource_slots(st: Dict[str, Any]) -> List[Tuple[float, str]]:
         """根据所属线别生成初始资源槽：(释放时间, 线别)。"""
