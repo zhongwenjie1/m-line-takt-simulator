@@ -41,11 +41,11 @@ def main() -> None:
 
     app = QApplication.instance() or QApplication([])
     window = ExportTicketWindow()
+    window.spn_target_takt.setValue(58.0)
     window.last_schedule_rows = rows
     window.last_analysis = analysis
     window.last_max_finish = max_finish
     window.sim_time = max_finish
-    window.spn_target_takt.setValue(58.0)
 
     columns, log_rows = window._build_vehicle_log_rows()
     car_11 = window._filter_vehicle_log_rows(log_rows, "Car#11")

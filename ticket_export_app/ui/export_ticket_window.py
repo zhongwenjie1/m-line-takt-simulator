@@ -363,6 +363,7 @@ class ExportTicketWindow(QMainWindow):
         self.last_analysis = None
         self.last_max_finish = 0.0
         self._last_model_result_summary = None
+        self._analysis_result_stale = False
 
         self.lbl_vehicle_summary = QLabel("")
         self.lbl_vehicle_summary.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -639,13 +640,23 @@ class ExportTicketWindow(QMainWindow):
         self.btn_export_matrix.clicked.connect(self._export_station_matrix)
         self.cmb_launch_mode.currentIndexChanged.connect(self._update_mode_ui)
         self.cmb_launch_mode.currentIndexChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.cmb_launch_mode.currentIndexChanged.connect(self._invalidate_analysis_result)
         self.cmb_seq.currentIndexChanged.connect(self._update_sequence_freeze_ui)
         self.cmb_seq.currentIndexChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.cmb_seq.currentIndexChanged.connect(self._invalidate_analysis_result)
         self.spn_a_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_a_cars.valueChanged.connect(self._invalidate_analysis_result)
         self.spn_b_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_b_cars.valueChanged.connect(self._invalidate_analysis_result)
         self.spn_c_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_c_cars.valueChanged.connect(self._invalidate_analysis_result)
         self.spn_total_cars.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_total_cars.valueChanged.connect(self._invalidate_analysis_result)
         self.spn_max_run.valueChanged.connect(self._invalidate_frozen_vehicle_sequence)
+        self.spn_max_run.valueChanged.connect(self._invalidate_analysis_result)
+        self.spn_target_takt.valueChanged.connect(self._invalidate_analysis_result)
+        self.cmb_grid.currentTextChanged.connect(self._invalidate_analysis_result)
+        self.tbl.itemChanged.connect(self._invalidate_analysis_result)
         self.btn_freeze_sequence.clicked.connect(self._freeze_vehicle_sequence)
         self.btn_go_result_page.clicked.connect(lambda: self.multi_tabs.setCurrentWidget(self.page_multi_result_scroll))
         self.btn_analyze.clicked.connect(self.do_analyze)
@@ -666,6 +677,63 @@ class ExportTicketWindow(QMainWindow):
         self.btn_sw_add.clicked.connect(self.add_single_row)
         self.btn_sw_del.clicked.connect(self.del_single_row)
         self.btn_sw_export.clicked.connect(self.export_single_placeholder)
+        self._set_analysis_result_available(False)
+
+    def _set_analysis_result_available(self, available: bool):
+        """统一控制所有依赖最近一次分析结果的入口。"""
+        for name in (
+            "btn_model_result_explanation",
+            "btn_sim_play",
+            "btn_sim_pause",
+            "btn_sim_reset",
+            "btn_vehicle_log",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(bool(available))
+
+    def _invalidate_analysis_result(self, *_args):
+        """排程输入变化后立即废弃旧结果，避免旧rows与新参数混合显示。"""
+        had_result = bool(
+            getattr(self, "last_schedule_rows", None)
+            or getattr(self, "last_analysis", None)
+        )
+        if not had_result and getattr(self, "_analysis_result_stale", False):
+            return
+
+        if hasattr(self, "sim_timer"):
+            self.sim_timer.stop()
+        self.current_defs = []
+        self.last_schedule_rows = []
+        self.last_analysis = None
+        self.last_max_finish = 0.0
+        self._last_model_result_summary = None
+        self.sim_time = 0.0
+        self._analysis_result_stale = had_result
+        self._set_analysis_result_available(False)
+
+        if hasattr(self, "txt_schedule_debug"):
+            self.txt_schedule_debug.clear()
+        if hasattr(self, "lbl_realtime_takt"):
+            self.lbl_realtime_takt.setText("近期节拍（近5个间隔）：-")
+        if hasattr(self, "lbl_vehicle_summary"):
+            if had_result:
+                self.lbl_vehicle_summary.setText(
+                    "<div style='font-size:13px;color:#475569;padding:12px;'>"
+                    "输入参数或岗位矩阵已变化，请重新点击“分析当前排程”。"
+                    "</div>"
+                )
+            elif not self.lbl_vehicle_summary.text().strip():
+                self.lbl_vehicle_summary.setText(
+                    "<div style='font-size:13px;color:#64748b;padding:12px;'>"
+                    "请先填写参数与岗位，再点击“分析当前排程”。"
+                    "</div>"
+                )
+        self._update_sim_time_label()
+        self._update_sim_view()
+        self._draw_sim_scene()
+        if had_result and hasattr(self, "status"):
+            self.status.showMessage("输入已变化，请重新分析当前排程", 5000)
 
     def _update_mode_ui(self):
         """根据模式切换 A/B/C 输入含义：数量模式填写数量，比例模式填写比例 + 分析时间。"""
@@ -784,6 +852,7 @@ class ExportTicketWindow(QMainWindow):
         self._frozen_vehicle_sequence_signature = self._sequence_freeze_signature()
         self._frozen_vehicle_sequence_hash = sequence_hash
         self._frozen_vehicle_sequence_generated_at = datetime.now().isoformat(timespec="seconds")
+        self._invalidate_analysis_result()
         actual_max_run = self._max_sequence_run(vehicle_sequence)
         self.lbl_sequence_freeze_status.setText(
             f"已冻结 {len(vehicle_sequence)}台 · {sequence_hash[:8]}"
@@ -833,6 +902,8 @@ class ExportTicketWindow(QMainWindow):
             self.last_schedule_rows = rows
             self.last_analysis = analysis
             self.last_max_finish = float(max_finish or 0.0)
+            self._analysis_result_stale = False
+            self._set_analysis_result_available(True)
             if hasattr(self, "txt_schedule_debug"):
                 self.txt_schedule_debug.setPlainText(self._build_schedule_debug_log(rows, limit=200))
             self.sim_time = 0.0
@@ -1924,6 +1995,8 @@ class ExportTicketWindow(QMainWindow):
                     line_scope_cb.setCurrentText("1号线")
 
         device_count_cb.currentTextChanged.connect(_sync_line_scope)
+        device_count_cb.currentTextChanged.connect(self._invalidate_analysis_result)
+        line_scope_cb.currentTextChanged.connect(self._invalidate_analysis_result)
         _sync_line_scope()
 
     STATION_MATRIX_TEMPLATE_NAME = "M-Line岗位矩阵模板"
@@ -2186,6 +2259,7 @@ class ExportTicketWindow(QMainWindow):
         r = self.tbl.currentRow()
         if r >= 0:
             self.tbl.removeRow(r)
+            self._invalidate_analysis_result()
 
     # -------- 单人标准作业组合票：行操作 --------
     def add_single_row(self):
