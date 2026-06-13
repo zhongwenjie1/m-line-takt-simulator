@@ -349,15 +349,182 @@ def _is_plausible_blocking_root(profile: Dict[str, Any], target_takt: float) -> 
     return bool(profile.get("has_process_over_takt", False))
 
 
-def _next_processing_station(car_rows: List[Dict[str, Any]], current_index: int) -> str:
-    """Find the next station where this vehicle actually requires processing."""
+def _next_processing_row(
+    car_rows: List[Dict[str, Any]], current_index: int
+) -> Dict[str, Any] | None:
+    """Find the next row where this vehicle actually requires processing."""
     for next_row in car_rows[current_index + 1:]:
         if _row_duration(next_row) <= 0:
             continue
-        station = _row_station(next_row)
-        if station:
-            return station
+        if _row_station(next_row):
+            return next_row
+    return None
+
+
+def _next_route_row(
+    car_rows: List[Dict[str, Any]], current_index: int
+) -> Dict[str, Any] | None:
+    """Return the vehicle's immediate next route node, including zero-duration nodes."""
+    next_index = current_index + 1
+    return car_rows[next_index] if next_index < len(car_rows) else None
+
+
+def _next_processing_station(car_rows: List[Dict[str, Any]], current_index: int) -> str:
+    """Find the next station where this vehicle actually requires processing."""
+    next_row = _next_processing_row(car_rows, current_index)
+    if next_row is not None:
+        return _row_station(next_row)
     return _row_station(car_rows[current_index]) if current_index < len(car_rows) else ""
+
+
+def _compute_wait_classification(
+    rows: List[Dict[str, Any]], target_takt: float
+) -> Dict[str, Any]:
+    """Split in-line actual waiting from waiting beyond station holding capacity.
+
+    对外显示术语定版（2026-06-13，UI/报表第6轮按此呈现；内部英文键名保持不变以兼容）：
+      - total_bottleneck_wait / bottleneck_wait      -> 「超出可接纳等待」= max(0, 实际等待 − 可接纳上限)
+      - holding_limit                                 -> 「可接纳上限」= 有效设备数 × 目标节拍
+      - actual_wait / total_actual_wait               -> 「实际等待 / 累计实际等待」
+      - downstream_station /
+        bottleneck_wait_by_downstream_station         -> 「下一工程」（仅路线，非根因，也不代表它超节拍）
+    不对外使用“瓶颈阻塞 / 根因工程 / 阻塞根因”等措辞；最终远端根因需后续“根因事件记录”轮次。
+    """
+    actual_by_station: Dict[str, float] = defaultdict(float)
+    bottleneck_by_station: Dict[str, float] = defaultdict(float)
+    bottleneck_by_downstream_station: Dict[str, float] = defaultdict(float)
+    total_launch_wait = 0.0
+    total_actual_wait = 0.0
+    total_bottleneck_wait = 0.0
+    bottleneck_events: List[Dict[str, Any]] = []
+
+    for car_rows in _group_rows_by_car(rows).values():
+        for index, row in enumerate(car_rows):
+            waiting_station = _row_station(row)
+            total_launch_wait += _row_launch_wait(row)
+            block_wait = _row_block_wait(row)
+            if block_wait <= 0:
+                continue
+
+            total_actual_wait += block_wait
+            if waiting_station:
+                actual_by_station[waiting_station] += block_wait
+
+            holding_limit = max(0.0, target_takt) * _row_capacity(row)
+            bottleneck_wait = max(0.0, block_wait - holding_limit)
+            if bottleneck_wait <= 0:
+                continue
+
+            downstream_row = _next_route_row(car_rows, index)
+            downstream_station = (
+                _row_station(downstream_row) if downstream_row is not None else ""
+            )
+            total_bottleneck_wait += bottleneck_wait
+            if waiting_station:
+                bottleneck_by_station[waiting_station] += bottleneck_wait
+            if downstream_station:
+                bottleneck_by_downstream_station[downstream_station] += bottleneck_wait
+            bottleneck_events.append(
+                {
+                    "car": _car_key(row),
+                    "car_type": str(row.get("car_type", "") or ""),
+                    "waiting_station": waiting_station,
+                    "downstream_station": downstream_station,
+                    "actual_wait": block_wait,
+                    "holding_capacity": _row_capacity(row),
+                    "holding_limit": holding_limit,
+                    "bottleneck_wait": bottleneck_wait,
+                }
+            )
+
+    def station_items(values: Dict[str, float]) -> List[Dict[str, Any]]:
+        return [
+            {"station": station, "wait_time": wait_time}
+            for station, wait_time in sorted(
+                values.items(), key=lambda item: (-item[1], item[0])
+            )
+            if wait_time > 0
+        ]
+
+    return {
+        "total_actual_wait": total_actual_wait,
+        "actual_wait_by_station": station_items(actual_by_station),
+        "total_raw_flow_wait": total_actual_wait,
+        "raw_launch_wait": total_launch_wait,
+        "raw_post_process_wait": total_actual_wait,
+        "raw_flow_wait_by_station": station_items(actual_by_station),
+        "total_bottleneck_wait": total_bottleneck_wait,
+        "bottleneck_launch_wait": 0.0,
+        "bottleneck_post_process_wait": total_bottleneck_wait,
+        "bottleneck_wait_by_station": station_items(bottleneck_by_station),
+        "bottleneck_wait_by_downstream_station": station_items(
+            bottleneck_by_downstream_station
+        ),
+        "bottleneck_wait_event_count": len(bottleneck_events),
+        "bottleneck_wait_events": bottleneck_events,
+    }
+
+
+def _compute_capacity_over_takt_summary(
+    rows: List[Dict[str, Any]], target_takt: float
+) -> Dict[str, Any]:
+    """Summarize processing time beyond each row's capacity-based takt limit."""
+    grouped: Dict[tuple[str, str], Dict[str, Any]] = {}
+    if target_takt <= 0:
+        return {
+            "capacity_over_takt_processes": [],
+            "capacity_over_takt_total_time": 0.0,
+            "capacity_over_takt_station_text": "无",
+        }
+
+    for row in rows:
+        station = _row_station(row)
+        if not station:
+            continue
+        duration = _row_duration(row)
+        capacity = _row_capacity(row)
+        capacity_limit = capacity * target_takt
+        over_takt_time = max(0.0, duration - capacity_limit)
+        if over_takt_time <= 0:
+            continue
+        car_type = str(
+            row.get("car_type", row.get("duration_source", "")) or ""
+        ).upper()
+        key = (station, car_type)
+        item = grouped.setdefault(
+            key,
+            {
+                "station": station,
+                "car_type": car_type,
+                "count": 0,
+                "duration": duration,
+                "effective_capacity": capacity,
+                "capacity_limit": capacity_limit,
+                "single_over_takt": over_takt_time,
+                "total_over_takt": 0.0,
+            },
+        )
+        item["count"] += 1
+        item["duration"] = max(float(item["duration"]), duration)
+        item["single_over_takt"] = max(
+            float(item["single_over_takt"]), over_takt_time
+        )
+        item["total_over_takt"] += over_takt_time
+
+    processes = sorted(
+        grouped.values(),
+        key=lambda item: (-float(item["total_over_takt"]), item["station"], item["car_type"]),
+    )
+    total_time = sum(float(item["total_over_takt"]) for item in processes)
+    station_text = "、".join(
+        f"{item['station']}{item['car_type']}超{item['single_over_takt']:.1f}s"
+        for item in processes
+    ) or "无"
+    return {
+        "capacity_over_takt_processes": processes,
+        "capacity_over_takt_total_time": total_time,
+        "capacity_over_takt_station_text": station_text,
+    }
 
 
 def _compute_blocking_summary(rows: List[Dict[str, Any]], target_takt: float) -> Dict[str, Any]:
@@ -639,6 +806,8 @@ def analyze_schedule_v2(
     max_finish_value = _to_float(max_finish, 0.0)
 
     wait_summary = _compute_wait_summary(rows, target)
+    wait_classification = _compute_wait_classification(rows, target)
+    capacity_over_takt_summary = _compute_capacity_over_takt_summary(rows, target)
     station_summary = _compute_station_summary(rows, target)
     car_type_summary = _compute_car_type_summary(rows)
 
@@ -662,6 +831,8 @@ def analyze_schedule_v2(
         "max_finish": max_finish_value,
         "target_takt": target,
         **wait_summary,
+        **wait_classification,
+        **capacity_over_takt_summary,
         **overflow_summary,
         **blocking_summary,
         **batch_overrun_summary,

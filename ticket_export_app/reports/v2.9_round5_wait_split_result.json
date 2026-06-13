@@ -1,0 +1,230 @@
+{
+  "assertions": "passed",
+  "minimal_cases": {
+    "dual_device_116": {
+      "bottleneck": 4.0,
+      "bottleneck_stations": [
+        {
+          "station": "等待工程",
+          "wait_time": 4.0
+        }
+      ],
+      "downstream_stations": [
+        {
+          "station": "超节拍工程",
+          "wait_time": 4.0
+        }
+      ],
+      "over_takt_processes": [
+        {
+          "capacity_limit": 116.0,
+          "car_type": "",
+          "count": 1,
+          "duration": 143.5,
+          "effective_capacity": 2,
+          "single_over_takt": 27.5,
+          "station": "超节拍工程",
+          "total_over_takt": 27.5
+        }
+      ],
+      "raw": 120.0
+    },
+    "single_device_116": {
+      "bottleneck": 12.0,
+      "bottleneck_stations": [
+        {
+          "station": "等待工程",
+          "wait_time": 12.0
+        }
+      ],
+      "downstream_stations": [
+        {
+          "station": "超节拍工程",
+          "wait_time": 12.0
+        }
+      ],
+      "over_takt_processes": [
+        {
+          "capacity_limit": 58.0,
+          "car_type": "",
+          "count": 1,
+          "duration": 116.0,
+          "effective_capacity": 1,
+          "single_over_takt": 58.0,
+          "station": "超节拍工程",
+          "total_over_takt": 58.0
+        }
+      ],
+      "raw": 70.0
+    },
+    "zero_node": {
+      "bottleneck": 27.5,
+      "bottleneck_stations": [
+        {
+          "station": "ADAS",
+          "wait_time": 27.5
+        }
+      ],
+      "downstream_stations": [
+        {
+          "station": "零工时节点",
+          "wait_time": 27.5
+        }
+      ],
+      "over_takt_processes": [
+        {
+          "capacity_limit": 116.0,
+          "car_type": "",
+          "count": 1,
+          "duration": 143.5,
+          "effective_capacity": 2,
+          "single_over_takt": 27.5,
+          "station": "ARHUD+慢充",
+          "total_over_takt": 27.5
+        }
+      ],
+      "raw": 143.5
+    }
+  },
+  "quantity": {
+    "bottleneck_launch_wait": 0.0,
+    "bottleneck_post_process_wait": 5430.0,
+    "bottleneck_wait_by_downstream_station": [
+      {
+        "station": "电检2",
+        "wait_time": 3384.0
+      },
+      {
+        "station": "四轮定位上、下",
+        "wait_time": 1906.0
+      },
+      {
+        "station": "电检1",
+        "wait_time": 140.0
+      }
+    ],
+    "bottleneck_wait_by_station": [
+      {
+        "station": "电检1",
+        "wait_time": 3384.0
+      },
+      {
+        "station": "空气悬挂+快充",
+        "wait_time": 1906.0
+      },
+      {
+        "station": "L2++",
+        "wait_time": 140.0
+      }
+    ],
+    "bottleneck_wait_event_count": 255,
+    "capacity_over_takt_processes": [
+      {
+        "capacity_limit": 116.0,
+        "car_type": "C",
+        "count": 566,
+        "duration": 143.5,
+        "effective_capacity": 2,
+        "single_over_takt": 27.5,
+        "station": "ARHUD+慢充",
+        "total_over_takt": 15565.0
+      },
+      {
+        "capacity_limit": 116.0,
+        "car_type": "C",
+        "count": 566,
+        "duration": 120.5,
+        "effective_capacity": 2,
+        "single_over_takt": 4.5,
+        "station": "四轮定位上、下",
+        "total_over_takt": 2547.0
+      },
+      {
+        "capacity_limit": 116.0,
+        "car_type": "B",
+        "count": 306,
+        "duration": 120.5,
+        "effective_capacity": 2,
+        "single_over_takt": 4.5,
+        "station": "四轮定位上、下",
+        "total_over_takt": 1377.0
+      }
+    ],
+    "capacity_over_takt_total_time": 19489.0,
+    "existing_displayed_blocking_time": 121987.5,
+    "existing_total_wait": 4868438.5,
+    "generated": 1148,
+    "raw_launch_wait": 4628463.0,
+    "raw_post_process_wait": 239975.5,
+    "schedule_time_chain_unchanged": true,
+    "total_bottleneck_wait": 5430.0,
+    "total_raw_flow_wait": 239975.5
+  },
+  "ratio": {
+    "bottleneck_launch_wait": 0.0,
+    "bottleneck_post_process_wait": 3768.5,
+    "bottleneck_wait_by_downstream_station": [
+      {
+        "station": "四轮定位上、下",
+        "wait_time": 2096.0
+      },
+      {
+        "station": "电检2",
+        "wait_time": 1672.5
+      }
+    ],
+    "bottleneck_wait_by_station": [
+      {
+        "station": "空气悬挂+快充",
+        "wait_time": 2096.0
+      },
+      {
+        "station": "电检1",
+        "wait_time": 1672.5
+      }
+    ],
+    "bottleneck_wait_event_count": 187,
+    "capacity_over_takt_processes": [
+      {
+        "capacity_limit": 116.0,
+        "car_type": "C",
+        "count": 620,
+        "duration": 143.5,
+        "effective_capacity": 2,
+        "single_over_takt": 27.5,
+        "station": "ARHUD+慢充",
+        "total_over_takt": 17050.0
+      },
+      {
+        "capacity_limit": 116.0,
+        "car_type": "C",
+        "count": 620,
+        "duration": 120.5,
+        "effective_capacity": 2,
+        "single_over_takt": 4.5,
+        "station": "四轮定位上、下",
+        "total_over_takt": 2790.0
+      },
+      {
+        "capacity_limit": 116.0,
+        "car_type": "B",
+        "count": 372,
+        "duration": 120.5,
+        "effective_capacity": 2,
+        "single_over_takt": 4.5,
+        "station": "四轮定位上、下",
+        "total_over_takt": 1674.0
+      }
+    ],
+    "capacity_over_takt_total_time": 21514.0,
+    "existing_displayed_blocking_time": 122606.0,
+    "existing_total_wait": 6321426.5,
+    "generated": 1240,
+    "raw_launch_wait": 6083039.5,
+    "raw_post_process_wait": 238387.0,
+    "schedule_time_chain_unchanged": true,
+    "total_bottleneck_wait": 3768.5,
+    "total_raw_flow_wait": 238387.0
+  },
+  "round": "v2.9-round5-wait-split"
+}
