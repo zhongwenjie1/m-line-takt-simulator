@@ -1,0 +1,32 @@
+{
+  "round": "8",
+  "subject": "业务术语中文化",
+  "retained_compact_terms": [
+    "Car#",
+    "TYPE",
+    "ST1/ST2",
+    "start",
+    "IN",
+    "OUT",
+    "WAIT",
+    "FLOW"
+  ],
+  "localized_terms": {
+    "svc_finish": "加工完成",
+    "depart": "离开工程",
+    "dur": "加工工时",
+    "launch_wait": "投入等待",
+    "block_wait": "完工后等待",
+    "resource key": "资源标识",
+    "gap": "相邻下线间隔",
+    "SEGMENTS": "工程过程"
+  },
+  "checks": {
+    "internal_data_keys_unchanged": true,
+    "schedule_time_chain_unchanged": true,
+    "round6_wait_cause_regression": true,
+    "round7_capacity_regression": true,
+    "offscreen_log_display": true,
+    "py_compile": true
+  }
+}

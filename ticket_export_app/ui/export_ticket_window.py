@@ -918,8 +918,8 @@ class ExportTicketWindow(QMainWindow):
             return str(row.get("step_display", row.get("station", row.get("group", ""))) or "")
 
         columns = [
-            "车辆编号", "车型", "工序序号", "工序名称", "线别", "资源 key",
-            "start", "svc_finish", "depart", "end", "dur", "block_wait", "launch_wait",
+            "车辆编号", "车型", "工序序号", "工序名称", "线别", "资源标识",
+            "start", "加工完成", "离开工程", "结束时间", "加工工时", "完工后等待", "投入等待",
             "下一工序", "下一工序 start", "备注",
         ]
 
@@ -1031,6 +1031,7 @@ class ExportTicketWindow(QMainWindow):
         info = QLabel(
             "车辆明细 / 调试日志：按车辆维度一车一行显示；"
             "用于查看每台车的完整工序流转、等待与跳过岗位。"
+            "其中投入等待表示进入首工程前的等待，完工后等待表示加工完成后等待下一工程接收。"
         )
         info.setWordWrap(True)
         info.setStyleSheet("color:#475569;font-size:12px;")
@@ -1370,8 +1371,10 @@ class ExportTicketWindow(QMainWindow):
         lines = [
             "车辆明细 / 调试日志（按车辆维度）",
             "说明：能力判断按车型工时÷有效设备能力与目标节拍比较；工时为0的流转节点不参加判断。",
+            "字段说明：IN=实际投车时间，OUT=下线完成时间，WAIT=单车总等待，FLOW=单车贯通时间；"
+            "单车总等待包含投入等待和各工程完工后等待。",
             "-" * 120,
-            f"{'CAR':<8}{'TYPE':<6}{'IN(s)':>10}{'OUT(s)':>10}{'WAIT(s)':>10}{'FLOW(s)':>10}  {'能力判断':<18}  SEGMENTS",
+            f"{'CAR':<8}{'TYPE':<6}{'IN(s)':>10}{'OUT(s)':>10}{'WAIT(s)':>10}{'FLOW(s)':>10}  {'能力判断':<18}  工程过程",
             "-" * 120,
         ]
 
@@ -1407,8 +1410,8 @@ class ExportTicketWindow(QMainWindow):
                 block_wait = _row_block_wait(row)
                 step_label = f"ST{step_seq}" if step_seq not in (None, "") else "ST?"
                 step_parts.append(
-                    f"{step_label} {station}(开:{_fmt_sec(start)}s 加:{_fmt_sec(dur)}s "
-                    f"等前:{_fmt_sec(launch_wait)}s 等后:{_fmt_sec(block_wait)}s)"
+                    f"{step_label} {station}(start:{_fmt_sec(start)}s 加工工时:{_fmt_sec(dur)}s "
+                    f"投入等待:{_fmt_sec(launch_wait)}s 完工后等待:{_fmt_sec(block_wait)}s)"
                 )
 
                 try:
@@ -3255,7 +3258,7 @@ class ExportTicketWindow(QMainWindow):
             output_calc = "当前分析时间内暂无车辆完成下线，所以当前下线车辆为 0台。"
         elif last_output_car_no is not None and last_output_car_out is not None and analysis_time_seconds:
             output_calc = (
-                f"第{escape(str(last_output_car_no))}台车辆 OUT 时间 {_fmt_num(last_output_car_out)}s ≤ "
+                f"第{escape(str(last_output_car_no))}台车辆下线完成时间 {_fmt_num(last_output_car_out)}s ≤ "
                 f"分析时间 {_fmt_minutes(analysis_time_minutes)}分钟（{_fmt_num(analysis_time_seconds)}s），"
                 f"所以当前下线车辆为 {output_count}台。"
             )
@@ -3276,7 +3279,7 @@ class ExportTicketWindow(QMainWindow):
             rate_calc = f"{qualified_count} ÷ {output_count} × 100% = {qualified_rate_percent:.1f}%。"
 
         if output_count < 2 or first_out is None or last_out is None or overall_takt is None:
-            overall_calc = "当前下线车辆不足 2台，无法计算 OUT 平均间隔，所以整体节拍暂显示为 -。"
+            overall_calc = "当前下线车辆不足 2台，无法计算相邻下线间隔平均值，所以整体节拍暂显示为 -。"
         else:
             overall_calc = (
                 f"（{_fmt_num(last_out)} - {_fmt_num(first_out)}）÷（{output_count} - 1）≈ "
@@ -3299,7 +3302,7 @@ class ExportTicketWindow(QMainWindow):
 
   <div style="margin-top:8px;"><b>1. 下线车辆</b></div>
   <div>表示：在设定分析时间内，已经完成最后一道工序并下线的车辆数量。</div>
-  <div>计算口径：OUT 时间 ≤ 分析时间。</div>
+  <div>计算口径：下线完成时间 ≤ 分析时间。</div>
   <div>本次计算：{output_calc}</div>
 
   <div style="margin-top:8px;"><b>2. 达标车辆</b></div>
@@ -3315,7 +3318,7 @@ class ExportTicketWindow(QMainWindow):
 
   <div style="margin-top:8px;"><b>4. 整体节拍</b></div>
   <div>表示：已下线车辆在当前分析时间内的整体下线节奏。</div>
-  <div>计算口径：整体节拍 =（最后一台 OUT 时间 - 第一台 OUT 时间）÷（下线车辆数 - 1）。</div>
+  <div>计算口径：整体节拍 =（最后一台下线完成时间 - 第一台下线完成时间）÷（下线车辆数 - 1），即全部相邻下线间隔的平均值。</div>
   <div>本次计算：{overall_calc}</div>
 
   <div style="margin-top:8px;"><b>5. 累计实际等待与累计节拍外等待</b></div>
