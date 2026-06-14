@@ -26,7 +26,10 @@ except Exception:
 # Worker & tickets：直接从当前工程内部模块导入
 from infra.threads import Worker
 from core import tickets
-from core.analysis import apply_time_window_analysis as core_apply_time_window_analysis
+from core.analysis import (
+    apply_time_window_analysis as core_apply_time_window_analysis,
+    compute_car_capacity_results,
+)
 from core.input_parser import parse_multi_project_inputs as core_parse_multi_project_inputs
 
 
@@ -1361,11 +1364,14 @@ class ExportTicketWindow(QMainWindow):
         except Exception:
             target_takt = 0.0
 
+        capacity_results = compute_car_capacity_results(rows, target_takt)
+        capacity_by_car = {int(item["car"]): item for item in capacity_results}
+
         lines = [
             "车辆明细 / 调试日志（按车辆维度）",
-            "说明：FLOW(s)=OUT-IN，RESULT=单车工序节拍观察结果，不代表模型最终判定。",
+            "说明：能力判断按车型工时÷有效设备能力与目标节拍比较；工时为0的流转节点不参加判断。",
             "-" * 120,
-            f"{'CAR':<8}{'TYPE':<6}{'IN(s)':>10}{'OUT(s)':>10}{'WAIT(s)':>10}{'FLOW(s)':>10}  {'RESULT':<8}  SEGMENTS",
+            f"{'CAR':<8}{'TYPE':<6}{'IN(s)':>10}{'OUT(s)':>10}{'WAIT(s)':>10}{'FLOW(s)':>10}  {'能力判断':<18}  SEGMENTS",
             "-" * 120,
         ]
 
@@ -1379,7 +1385,15 @@ class ExportTicketWindow(QMainWindow):
             final_finish = _row_depart(car_rows[-1])
             total_wait = sum(_row_launch_wait(row) + _row_block_wait(row) for row in car_rows)
             flow_time = max(0.0, final_finish - first_start)
-            car_result = "工序NG" if target_takt > 0 and any(_row_dur(row) > target_takt for row in car_rows) else "工序OK"
+            try:
+                car_number = int(float(car))
+            except Exception:
+                car_number = 0
+            capacity_result = capacity_by_car.get(car_number, {})
+            car_result = str(capacity_result.get("capacity_status", "未设定目标") or "未设定目标")
+            over_station_text = str(capacity_result.get("over_capacity_station_text", "无") or "无")
+            if car_result == "能力超目标":
+                car_result = f"能力超目标：{over_station_text}"
 
             step_parts = []
             remarks = []
@@ -1425,7 +1439,7 @@ class ExportTicketWindow(QMainWindow):
                 f"{_fmt_sec(final_finish):>10}"
                 f"{_fmt_sec(total_wait):>10}"
                 f"{_fmt_sec(flow_time):>10}"
-                f"  {car_result:<8}  "
+                f"  {car_result:<18}  "
                 + " | ".join(step_parts)
                 + remark_text
             )
@@ -2779,55 +2793,32 @@ class ExportTicketWindow(QMainWindow):
         else:
             overall_takt = None
 
-        def _row_duration(row: dict) -> float:
-            value = self._sim_row_value(row, "dur", "duration", "work_time", "process_time", default=None)
-            if value is not None:
-                try:
-                    return max(0.0, float(value or 0.0))
-                except Exception:
-                    pass
-            start = self._sim_row_start(row)
-            finish = self._sim_row_service_finish(row)
-            return max(0.0, finish - start)
-
-        def _effective_capacity(row: dict) -> float:
-            value = self._sim_row_value(row, "capacity", default=None)
-            if value is not None:
-                try:
-                    return max(1.0, float(value or 1.0))
-                except Exception:
-                    pass
-            run_mode = str(self._sim_row_value(row, "run_mode", default="") or "")
-            if run_mode == "双线双设备":
-                return 2.0
-            if run_mode in ("单线单设备", "双线单设备"):
-                return 1.0
-            line_scope = str(self._sim_row_value(row, "line_scope", default="") or "")
-            device_count = self._sim_row_value(row, "device_count", default=None)
-            try:
-                device_value = int(float(device_count or 1))
-            except Exception:
-                device_value = 1
-            if device_value >= 2 and line_scope == "双线":
-                return 2.0
-            return 1.0
-
         qualified_vehicle_count = 0
         capacity_over_station_map = {}
+        capacity_results = (
+            analysis.get("car_capacity_results", [])
+            if isinstance(analysis, dict)
+            else []
+        )
+        if not capacity_results:
+            capacity_results = compute_car_capacity_results(rows, target_takt)
+        capacity_by_car = {
+            int(item.get("car", 0) or 0): item
+            for item in capacity_results
+            if int(item.get("car", 0) or 0) > 0
+        }
         if denominator_vehicle_count > 0 and target_takt > 0:
             for item in target_scope_vehicles:
-                vehicle_ok = True
-                car_type = str(item.get("car_type") or "").upper()
-                for row in item.get("segments", []):
-                    duration = _row_duration(row)
-                    if duration <= 0:
-                        continue
-                    capacity = _effective_capacity(row)
-                    station_capacity_takt = duration / capacity
-                    if station_capacity_takt <= target_takt:
-                        continue
-                    vehicle_ok = False
-                    station_name = self._sim_row_station(row)
+                try:
+                    car_number = int(float(item.get("car_key", 0) or 0))
+                except Exception:
+                    car_number = 0
+                capacity_result = capacity_by_car.get(car_number, {})
+                car_type = str(capacity_result.get("car_type", item.get("car_type", "")) or "").upper()
+                if bool(capacity_result.get("meets_capacity_target", False)):
+                    qualified_vehicle_count += 1
+                for over_item in capacity_result.get("over_capacity_stations", []) or []:
+                    station_name = str(over_item.get("station", "") or "未知工程")
                     rec = capacity_over_station_map.setdefault(station_name, {
                         "station": station_name,
                         "vehicle_count": 0,
@@ -2837,9 +2828,9 @@ class ExportTicketWindow(QMainWindow):
                     rec["vehicle_count"] += 1
                     if car_type in rec["by_type"]:
                         rec["by_type"][car_type] += 1
-                    rec["max_over"] = max(rec["max_over"], duration - capacity * target_takt)
-                if vehicle_ok:
-                    qualified_vehicle_count += 1
+                    rec["max_over"] = max(
+                        rec["max_over"], float(over_item.get("over_time", 0.0) or 0.0)
+                    )
         capacity_over_stations = sorted(
             capacity_over_station_map.values(),
             key=lambda item: (-int(item.get("vehicle_count", 0) or 0), str(item.get("station", ""))),

@@ -295,6 +295,46 @@ def _compute_car_type_summary(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return result
 
 
+def compute_car_capacity_results(
+    rows: Iterable[Dict[str, Any]], target_takt: float
+) -> List[Dict[str, Any]]:
+    """按唯一能力口径判断每台车，并保留超过目标的工程明细。"""
+    target = max(0.0, _to_float(target_takt, 0.0))
+    results: List[Dict[str, Any]] = []
+    for car, car_rows in sorted(_group_rows_by_car(rows).items()):
+        over_stations: List[Dict[str, Any]] = []
+        car_type = str(car_rows[0].get("car_type", "") or "") if car_rows else ""
+        for row in car_rows:
+            duration = _row_duration(row)
+            if duration <= 0:
+                continue
+            capacity = _row_capacity(row)
+            capacity_limit = capacity * target
+            capacity_takt = duration / capacity
+            if target > 0 and capacity_takt > target + 1e-9:
+                over_stations.append({
+                    "station": _row_station(row),
+                    "duration": duration,
+                    "effective_capacity": capacity,
+                    "capacity_limit": capacity_limit,
+                    "capacity_takt": capacity_takt,
+                    "over_time": duration - capacity_limit,
+                })
+        results.append({
+            "car": car,
+            "car_type": car_type,
+            "meets_capacity_target": target > 0 and not over_stations,
+            "capacity_status": "能力满足" if target > 0 and not over_stations else (
+                "未设定目标" if target <= 0 else "能力超目标"
+            ),
+            "over_capacity_stations": over_stations,
+            "over_capacity_station_text": "、".join(
+                item["station"] for item in over_stations
+            ) or "无",
+        })
+    return results
+
+
 # === Station profile helpers for blocking root-cause analysis ===
 
 def _build_station_profiles(rows: List[Dict[str, Any]], target_takt: float) -> Dict[str, Dict[str, Any]]:
@@ -963,6 +1003,7 @@ def analyze_schedule_v2(
     wait_cause_chain_summary = _compute_wait_cause_chain_summary(rows, target)
     station_summary = _compute_station_summary(rows, target)
     car_type_summary = _compute_car_type_summary(rows)
+    car_capacity_results = compute_car_capacity_results(rows, target)
 
     blocking_summary = _compute_blocking_summary(rows, target)
     batch_overrun_summary = _compute_batch_overrun_summary(
@@ -999,6 +1040,7 @@ def analyze_schedule_v2(
         "station_summary": station_summary,
         "car_types": car_type_summary,
         "car_type_summary": car_type_summary,
+        "car_capacity_results": car_capacity_results,
         "rows": rows,
     }
 

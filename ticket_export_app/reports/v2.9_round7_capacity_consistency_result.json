@@ -1,0 +1,37 @@
+{
+  "round": "7",
+  "subject": "达标口径统一",
+  "criterion": "每台车所有加工工时大于0的工程均满足 duration / effective_capacity <= target_takt",
+  "zero_duration_rule": "保留流转节点，不参与能力超目标判断",
+  "quantity_mode": {
+    "mix": {
+      "A": 276,
+      "B": 306,
+      "C": 566
+    },
+    "vehicles": 1148,
+    "capacity_meets": 276,
+    "capacity_exceeds": 872,
+    "schedule_time_chain_unchanged": true
+  },
+  "ratio_mode": {
+    "ratio": {
+      "A": 2,
+      "B": 3,
+      "C": 5
+    },
+    "generated_vehicles": 1240,
+    "capacity_meets_all_generated": 248,
+    "capacity_exceeds_all_generated": 992,
+    "analysis_window_seconds": 69000,
+    "output_within_window": 1024,
+    "capacity_meets_within_window": 206,
+    "schedule_time_chain_unchanged": true
+  },
+  "consistency_checks": {
+    "shared_model_and_log_calculation": true,
+    "zero_duration_excluded": true,
+    "legacy_ok_ng_removed_from_vehicle_log": true,
+    "result_column_removed_from_vehicle_log": true
+  }
+}
