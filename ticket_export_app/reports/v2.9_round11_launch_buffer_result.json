@@ -1,0 +1,26 @@
+{
+  "round": "11",
+  "subject": "理论投车与仿真缓冲车辆披露",
+  "scenario": {
+    "analysis_minutes": 1150,
+    "analysis_seconds": 69000,
+    "target_takt": 58,
+    "ratio": "2:3:5"
+  },
+  "vehicle_scope": {
+    "theoretical_launch_count": 1190,
+    "simulation_buffer_count": 50
+  },
+  "target_batch": {
+    "first_vehicle_planned_lead_time": 861.0,
+    "last_vehicle_planned_launch_time": 68962.0,
+    "target_batch_time": 69823.0,
+    "actual_finish_time": 80010.5,
+    "finish_delta": 10187.5,
+    "batch_overrun_time": 10187.5,
+    "batch_early_time": 0.0,
+    "result": "延后完成"
+  },
+  "analysis_window_output_count": 1024,
+  "boundary": "Car#1至Car#1190用于目标批次完成判断；计划完成时刻=首台计划贯通时间+(1190-1)×目标节拍；差值为负时记录提前完成。Car#1191至Car#1240仅用于窗口尾部趋势观察。"
+}

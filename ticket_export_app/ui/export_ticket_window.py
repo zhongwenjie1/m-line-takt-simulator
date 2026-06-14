@@ -207,7 +207,8 @@ class ExportTicketWindow(QMainWindow):
         self.spn_total_cars.setValue(60)
         self.spn_total_cars.setSuffix(" 分钟")
         self.spn_total_cars.setToolTip(
-            "按比例投车模式下使用；空线起步，第1台从0s进入首岗位，按分析时间和目标节拍计算理论投车台数。"
+            "按比例投车模式下使用；按分析时间和目标节拍计算理论投车台数，"
+            "并额外生成50台仿真缓冲车辆观察窗口尾部趋势。"
         )
         row_ratio.addWidget(self.spn_total_cars)
         self.lbl_total_cars.hide()
@@ -686,7 +687,8 @@ class ExportTicketWindow(QMainWindow):
             if is_ratio:
                 self.params_tip.setText(
                     "当前模式：按比例投车。A/B/C 填比例；分析时间填写 xx 分钟。"
-                    "程序按空线起步模型，第1台从0s进入首岗位，并按目标节拍计算理论投车台数。"
+                    "程序按目标节拍计算理论投车台数，并额外生成50台仿真缓冲车辆；"
+                    "缓冲车辆不进入目标批次完成判断。"
                 )
             else:
                 self.params_tip.setText("当前模式：按数量投车。A/B/C 填数量；顺排按 A→B→C，交替混流可配合最大连续台数使用。")
@@ -2387,6 +2389,8 @@ class ExportTicketWindow(QMainWindow):
 
         self.current_analysis_time_seconds = parsed.get("analysis_time_seconds")
         self.current_theoretical_launch_count = parsed.get("theoretical_launch_count")
+        self.current_simulation_buffer_count = parsed.get("simulation_buffer_count", 0)
+        self.current_simulation_vehicle_count = parsed.get("simulation_vehicle_count", parsed.get("cars", 0))
 
         return (
             parsed["project"],
@@ -2453,6 +2457,7 @@ class ExportTicketWindow(QMainWindow):
             target_takt=target_takt,
             analysis_time_seconds=getattr(self, "current_analysis_time_seconds", None),
             theoretical_launch_count=getattr(self, "current_theoretical_launch_count", None),
+            simulation_buffer_count=getattr(self, "current_simulation_buffer_count", 0),
         )
 
     def _show_analysis_result(self, analysis):
@@ -3021,6 +3026,8 @@ class ExportTicketWindow(QMainWindow):
             ratio_b = int(self.spn_b_cars.value()) if hasattr(self, "spn_b_cars") else 0
             ratio_c = int(self.spn_c_cars.value()) if hasattr(self, "spn_c_cars") else 0
             analysis_minutes = int(self.spn_total_cars.value()) if hasattr(self, "spn_total_cars") else 0
+            theoretical_launch_count = int(summary.get("theoretical_launch_count", 0) or 0)
+            simulation_buffer_count = int(summary.get("simulation_buffer_count", 0) or 0)
             summary_lines = [
                 (
                     ("模式", "按比例投车"),
@@ -3031,7 +3038,8 @@ class ExportTicketWindow(QMainWindow):
                     ("目标节拍", f"{target_takt_display}s"),
                 ),
                 (
-                    ("投车台数", f"{total_cars}台"),
+                    ("理论投车", f"{theoretical_launch_count}台"),
+                    ("仿真缓冲", f"{simulation_buffer_count}台"),
                 ),
             ]
         else:

@@ -1051,6 +1051,7 @@ def apply_time_window_analysis(
     target_takt,
     analysis_time_seconds,
     theoretical_launch_count,
+    simulation_buffer_count=0,
 ):
     """Apply v2-6D line takt time-window analysis without touching scheduling."""
     if not isinstance(analysis, dict):
@@ -1059,6 +1060,7 @@ def apply_time_window_analysis(
     try:
         analysis_time_seconds = float(analysis_time_seconds or 0.0)
         theoretical_launch_count = int(theoretical_launch_count or 0)
+        simulation_buffer_count = max(0, int(simulation_buffer_count or 0))
         target_takt = float(target_takt or 0.0)
     except Exception:
         return analysis
@@ -1096,6 +1098,11 @@ def apply_time_window_analysis(
         car_finish_times[car] = max(car_finish_times.get(car, 0.0), finish)
 
     finish_times = sorted(car_finish_times.values())
+    target_batch_finish_times = [
+        finish
+        for car, finish in car_finish_times.items()
+        if 0 < car <= theoretical_launch_count
+    ]
     actual_output_count = sum(
         1 for finish in finish_times
         if finish <= analysis_time_seconds + 1e-9
@@ -1152,6 +1159,8 @@ def apply_time_window_analysis(
         "analysis_time_seconds": analysis_time_seconds,
         "analysis_time_minutes": analysis_time_seconds / 60.0,
         "theoretical_launch_count": theoretical_launch_count,
+        "simulation_buffer_count": simulation_buffer_count,
+        "simulation_vehicle_count": len(car_finish_times),
         "station_count": station_count,
         "line_lead_time": line_lead_time,
         "planned_fill_time": planned_fill_time,
@@ -1167,6 +1176,30 @@ def apply_time_window_analysis(
         "actual_production_takt_in_window": actual_line_takt,
         "time_window_result": final_result,
     })
+
+    if len(target_batch_finish_times) == theoretical_launch_count:
+        target_batch_time = line_lead_time + (theoretical_launch_count - 1) * target_takt
+        target_batch_actual_finish = max(target_batch_finish_times)
+        target_batch_finish_delta = target_batch_actual_finish - target_batch_time
+        batch_overrun_time = max(0.0, target_batch_finish_delta)
+        batch_early_time = max(0.0, -target_batch_finish_delta)
+        if target_batch_finish_delta > 1e-9:
+            batch_result = "延后完成"
+        elif target_batch_finish_delta < -1e-9:
+            batch_result = "提前完成"
+        else:
+            batch_result = "按计划完成"
+        summary.update({
+            "target_batch_time": target_batch_time,
+            "target_batch_planned_finish_time": target_batch_time,
+            "actual_finish_time": target_batch_actual_finish,
+            "target_batch_actual_finish_time": target_batch_actual_finish,
+            "target_batch_finish_delta": target_batch_finish_delta,
+            "batch_overrun_time": batch_overrun_time,
+            "batch_early_time": batch_early_time,
+            "batch_overrun_cars": batch_overrun_time / target_takt,
+            "batch_overrun_result": batch_result,
+        })
 
     summary.pop("ok_output_count_in_window", None)
     summary.pop("output_gap_count", None)

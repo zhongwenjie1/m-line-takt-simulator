@@ -90,13 +90,12 @@ def validate_analysis_minutes(minutes):
     return value
 
 
-def calc_ratio_theoretical_launch_count(analysis_time_seconds, target_takt, buffer_count=50):
+def calc_ratio_theoretical_launch_count(analysis_time_seconds, target_takt):
     analysis_seconds = parse_required_float(analysis_time_seconds, "分析时间")
     takt = validate_target_takt(target_takt, required=True)
-    buffer_value = parse_int(buffer_count, 0)
-    count = int(math.ceil(analysis_seconds / takt)) + buffer_value
+    count = int(math.ceil(analysis_seconds / takt))
     if count <= 0:
-        raise ValueError("分析时间过短，按当前目标节拍计算的投车生成台数为 0，请增加分析时间。")
+        raise ValueError("分析时间过短，按当前目标节拍计算的理论投车台数为 0，请增加分析时间。")
     return count
 
 
@@ -271,10 +270,10 @@ def parse_multi_project_inputs(raw_inputs):
         theoretical_launch_count = calc_ratio_theoretical_launch_count(
             analysis_time_seconds,
             target_takt,
-            buffer_count=50,
         )
+        simulation_buffer_count = 50
         ratio_pattern = build_ratio_pattern(cars_a, cars_b, cars_c)
-        cars = theoretical_launch_count
+        cars = theoretical_launch_count + simulation_buffer_count
     else:
         vehicle_values = validate_vehicle_values(
             {"A": cars_a, "B": cars_b, "C": cars_c},
@@ -284,6 +283,7 @@ def parse_multi_project_inputs(raw_inputs):
         ratio_pattern = None
         analysis_time_seconds = None
         theoretical_launch_count = None
+        simulation_buffer_count = 0
 
     vehicle_counts = {
         "A": vehicle_values["A"],
@@ -310,4 +310,6 @@ def parse_multi_project_inputs(raw_inputs):
         "target_takt": target_takt,
         "analysis_time_seconds": analysis_time_seconds,
         "theoretical_launch_count": theoretical_launch_count,
+        "simulation_buffer_count": simulation_buffer_count,
+        "simulation_vehicle_count": cars,
     }
