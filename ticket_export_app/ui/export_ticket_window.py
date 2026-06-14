@@ -431,7 +431,11 @@ class ExportTicketWindow(QMainWindow):
         self.sim_progress.setMaximumHeight(18)
         self.sim_progress.setFormat("进度 %p%")
         sim_control_row.addWidget(self.sim_progress)
-        self.lbl_realtime_takt = QLabel("实时节拍：-")
+        self.lbl_realtime_takt = QLabel("近期节拍（近5个间隔）：-")
+        self.lbl_realtime_takt.setToolTip(
+            "当前播放时刻已下线车辆中，最近最多6台形成的最多5个相邻下线间隔平均值。"
+            "仅用于观察近期下线波动，不参与达标车辆、达标率、整体节拍或风险提示计算。"
+        )
         self.lbl_realtime_takt.setStyleSheet(
             "QLabel {"
             "font-size: 12px;"
@@ -2905,7 +2909,7 @@ class ExportTicketWindow(QMainWindow):
     def _update_realtime_model_result(self):
         if not getattr(self, "last_schedule_rows", None):
             if hasattr(self, "lbl_realtime_takt"):
-                self.lbl_realtime_takt.setText("实时节拍：-")
+                self.lbl_realtime_takt.setText("近期节拍（近5个间隔）：-")
             self._last_model_result_summary = None
             return
         realtime = self._build_realtime_model_result(float(getattr(self, "sim_time", 0.0) or 0.0))
@@ -2913,9 +2917,11 @@ class ExportTicketWindow(QMainWindow):
             realtime_takt = realtime.get("realtime_takt")
             target_takt = self._fmt_analysis_num(realtime.get("target_takt", 0.0))
             if realtime_takt is None:
-                self.lbl_realtime_takt.setText("实时节拍：-")
+                self.lbl_realtime_takt.setText("近期节拍（近5个间隔）：-")
             else:
-                self.lbl_realtime_takt.setText(f"实时节拍：{self._fmt_analysis_num(realtime_takt)}/{target_takt}")
+                self.lbl_realtime_takt.setText(
+                    f"近期节拍（近5个间隔）：{self._fmt_analysis_num(realtime_takt)}/{target_takt}"
+                )
         analysis = getattr(self, "last_analysis", None)
         if isinstance(analysis, dict):
             self._show_vehicle_summary(analysis)
