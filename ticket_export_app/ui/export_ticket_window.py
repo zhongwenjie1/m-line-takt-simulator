@@ -14,7 +14,7 @@ import math
 import csv
 from datetime import datetime
 from html import escape
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import PatternFill, Border, Side
 
@@ -42,7 +42,7 @@ class ExportTicketWindow(QMainWindow):
     说明：
       - 设备数量：1 表示单资源；2 表示双线双资源。
       - 所属线别：1号线 / 2号线 / 双线 / 双线共用。
-      - A/B/C 工时 > 0：该车型经过该岗位；工时 = 0：该车型跳过该岗位。
+      - A/B/C 工时 > 0：该车型在该岗位作业；工时 = 0：经过该岗位但不作业。
       - 参与投车的车型，工时不能为空；未参与投车的车型，工时可以为空。
     """
     COL_C_TIME = 7
@@ -285,9 +285,13 @@ class ExportTicketWindow(QMainWindow):
         table_action_row.setSpacing(8)
         table_layout.addLayout(table_action_row)
         table_action_row.addStretch()
+        self.btn_import_matrix = QPushButton("导入矩阵", self.page_multi_input)
+        self.btn_export_matrix = QPushButton("导出矩阵", self.page_multi_input)
         self.btn_add_row = QPushButton("添加步骤", self.page_multi_input)
         self.btn_del_row = QPushButton("删除步骤", self.page_multi_input)
         self.btn_fill_sample = QPushButton("填入示例", self.page_multi_input)
+        table_action_row.addWidget(self.btn_import_matrix)
+        table_action_row.addWidget(self.btn_export_matrix)
         table_action_row.addWidget(self.btn_add_row)
         table_action_row.addWidget(self.btn_del_row)
         table_action_row.addWidget(self.btn_fill_sample)
@@ -631,6 +635,8 @@ class ExportTicketWindow(QMainWindow):
         self.btn_add_row.clicked.connect(self.add_row)
         self.btn_del_row.clicked.connect(self.del_row)
         self.btn_fill_sample.clicked.connect(self.fill_sample)
+        self.btn_import_matrix.clicked.connect(self._import_station_matrix)
+        self.btn_export_matrix.clicked.connect(self._export_station_matrix)
         self.cmb_launch_mode.currentIndexChanged.connect(self._update_mode_ui)
         self.cmb_launch_mode.currentIndexChanged.connect(self._invalidate_frozen_vehicle_sequence)
         self.cmb_seq.currentIndexChanged.connect(self._update_sequence_freeze_ui)
@@ -1920,6 +1926,254 @@ class ExportTicketWindow(QMainWindow):
         device_count_cb.currentTextChanged.connect(_sync_line_scope)
         _sync_line_scope()
 
+    STATION_MATRIX_TEMPLATE_NAME = "M-Line岗位矩阵模板"
+    STATION_MATRIX_TEMPLATE_VERSION = "v2.9"
+    STATION_MATRIX_HEADERS = [
+        "序号", "工程名称", "设备数量", "所属线别",
+        "岗位设备", "A工时", "B工时", "C工时",
+    ]
+
+    def _collect_station_matrix_rows(self):
+        """读取当前岗位矩阵的原始显示值。"""
+        output = []
+        for row_index in range(self.tbl.rowCount()):
+            values = []
+            for column_index in range(8):
+                widget = self.tbl.cellWidget(row_index, column_index)
+                if isinstance(widget, QComboBox):
+                    value = widget.currentText().strip()
+                else:
+                    item = self.tbl.item(row_index, column_index)
+                    value = item.text().strip() if item else ""
+                values.append(value)
+            if any(values[1:]):
+                output.append(values)
+        return output
+
+    def _validate_station_matrix_rows(self, rows):
+        """校验并标准化Excel或界面中的岗位矩阵。"""
+        normalized = []
+        seen_names = set()
+        for source_index, values in enumerate(rows or [], start=1):
+            row = [str(value if value is not None else "").strip() for value in list(values)[:8]]
+            row.extend([""] * (8 - len(row)))
+            if not any(row):
+                continue
+
+            excel_row = source_index + 3
+            try:
+                seq_number = float(row[0])
+                seq = int(seq_number)
+                if seq_number != seq or seq <= 0:
+                    raise ValueError
+            except Exception:
+                raise ValueError(f"第{excel_row}行『序号』必须为正整数：{row[0] or '空'}")
+            expected_seq = len(normalized) + 1
+            if seq != expected_seq:
+                raise ValueError(f"第{excel_row}行『序号』应为{expected_seq}，当前为{seq}。")
+
+            name = row[1]
+            if not name:
+                raise ValueError(f"第{excel_row}行『工程名称』不能为空。")
+            if name in seen_names:
+                raise ValueError(f"第{excel_row}行『工程名称』重复：{name}。")
+            seen_names.add(name)
+
+            try:
+                device_number = float(row[2])
+                device_count = int(device_number)
+                if device_number != device_count or device_count not in (1, 2):
+                    raise ValueError
+            except Exception:
+                raise ValueError(f"第{excel_row}行『设备数量』只能为1或2：{row[2] or '空'}")
+
+            line_scope = row[3]
+            allowed_scopes = {"1号线", "2号线", "双线", "双线共用"}
+            if line_scope not in allowed_scopes:
+                raise ValueError(f"第{excel_row}行『所属线别』无效：{line_scope or '空'}")
+            if device_count == 2 and line_scope != "双线":
+                raise ValueError(f"第{excel_row}行设备数量为2时，所属线别必须为『双线』。")
+            if device_count == 1 and line_scope == "双线":
+                raise ValueError(f"第{excel_row}行设备数量为1时，所属线别不能为『双线』。")
+
+            if not row[4]:
+                raise ValueError(f"第{excel_row}行『岗位设备』不能为空。")
+
+            durations = []
+            for column_index, label in zip((5, 6, 7), ("A工时", "B工时", "C工时")):
+                try:
+                    duration = float(row[column_index])
+                except Exception:
+                    raise ValueError(f"第{excel_row}行『{label}』必须为数字：{row[column_index] or '空'}")
+                if duration < 0:
+                    raise ValueError(f"第{excel_row}行『{label}』不能小于0。")
+                durations.append(self._fmt_vehicle_log_value(duration))
+
+            normalized.append([
+                str(seq), name, str(device_count), line_scope, row[4], *durations,
+            ])
+
+        if not normalized:
+            raise ValueError("岗位矩阵为空，请至少填写一行有效数据。")
+        return normalized
+
+    def _write_station_matrix_xlsx(self, path, rows):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "岗位矩阵"
+        sheet["A1"] = self.STATION_MATRIX_TEMPLATE_NAME
+        sheet["B1"] = self.STATION_MATRIX_TEMPLATE_VERSION
+        sheet["A2"] = "工时为0表示车辆经过该工程，但不进行作业。"
+        for column_index, header in enumerate(self.STATION_MATRIX_HEADERS, start=1):
+            sheet.cell(row=3, column=column_index, value=header)
+        for row_index, values in enumerate(rows, start=4):
+            for column_index, value in enumerate(values, start=1):
+                if column_index in (1, 3):
+                    cell_value = int(value)
+                elif column_index in (6, 7, 8):
+                    cell_value = float(value)
+                else:
+                    cell_value = value
+                sheet.cell(row=row_index, column=column_index, value=cell_value)
+        widths = [10, 24, 12, 14, 24, 12, 12, 12]
+        for index, width in enumerate(widths, start=1):
+            sheet.column_dimensions[chr(64 + index)].width = width
+        sheet.freeze_panes = "A4"
+        workbook.save(path)
+
+    def _read_station_matrix_xlsx(self, path):
+        workbook = load_workbook(path, data_only=True, read_only=True)
+        if "岗位矩阵" not in workbook.sheetnames:
+            raise ValueError("未找到『岗位矩阵』工作表。")
+        sheet = workbook["岗位矩阵"]
+        if str(sheet["A1"].value or "").strip() != self.STATION_MATRIX_TEMPLATE_NAME:
+            raise ValueError("该文件不是M-Line岗位矩阵模板。")
+        version = str(sheet["B1"].value or "").strip()
+        if version != self.STATION_MATRIX_TEMPLATE_VERSION:
+            raise ValueError(f"模板版本不支持：{version or '未标识'}。")
+        headers = [str(sheet.cell(row=3, column=index).value or "").strip() for index in range(1, 9)]
+        if headers != self.STATION_MATRIX_HEADERS:
+            raise ValueError("岗位矩阵表头不完整或顺序不正确。")
+
+        raw_rows = []
+        blank_seen = False
+        for row_index in range(4, sheet.max_row + 1):
+            values = [sheet.cell(row=row_index, column=index).value for index in range(1, 9)]
+            if not any(value not in (None, "") for value in values):
+                blank_seen = bool(raw_rows)
+                continue
+            if blank_seen:
+                raise ValueError(f"第{row_index}行之前存在空白行，请删除中间空行后重试。")
+            raw_rows.append(values)
+        return version, self._validate_station_matrix_rows(raw_rows)
+
+    def _apply_station_matrix_rows(self, rows):
+        self.tbl.setRowCount(0)
+        for values in rows:
+            self.add_row()
+            row_index = self.tbl.rowCount() - 1
+            self.tbl.setItem(row_index, 0, QTableWidgetItem(values[0]))
+            self.tbl.setItem(row_index, 1, QTableWidgetItem(values[1]))
+            device_widget = self.tbl.cellWidget(row_index, 2)
+            line_widget = self.tbl.cellWidget(row_index, 3)
+            device_widget.setCurrentText(values[2])
+            line_widget.setCurrentText(values[3])
+            self.tbl.setItem(row_index, 4, QTableWidgetItem(values[4]))
+            self.tbl.setItem(row_index, 5, QTableWidgetItem(values[5]))
+            self.tbl.setItem(row_index, 6, QTableWidgetItem(values[6]))
+            self.tbl.setItem(row_index, 7, QTableWidgetItem(values[7]))
+        self._invalidate_frozen_vehicle_sequence()
+
+    def _station_matrix_change_counts(self, old_rows, new_rows):
+        old_by_seq = {row[0]: row for row in old_rows}
+        new_by_seq = {row[0]: row for row in new_rows}
+        added = len(set(new_by_seq) - set(old_by_seq))
+        removed = len(set(old_by_seq) - set(new_by_seq))
+        changed = sum(
+            old_by_seq[key] != new_by_seq[key]
+            for key in set(old_by_seq) & set(new_by_seq)
+        )
+        return added, changed, removed
+
+    def _confirm_station_matrix_import(self, file_name, version, rows):
+        current_rows = self._collect_station_matrix_rows()
+        try:
+            current_rows = self._validate_station_matrix_rows(current_rows) if current_rows else []
+        except Exception:
+            current_rows = self._collect_station_matrix_rows()
+        added, changed, removed = self._station_matrix_change_counts(current_rows, rows)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("岗位矩阵导入预览")
+        dialog.resize(920, 520)
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(
+            f"文件：{file_name}<br>"
+            f"模板版本：{version}｜导入{len(rows)}行｜"
+            f"新增{added}行｜修改{changed}行｜删除{removed}行"
+        )
+        layout.addWidget(summary)
+        preview = QTableWidget(len(rows), 8, dialog)
+        preview.setHorizontalHeaderLabels(self.STATION_MATRIX_HEADERS)
+        preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        preview.verticalHeader().setVisible(False)
+        preview.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for row_index, values in enumerate(rows):
+            for column_index, value in enumerate(values):
+                preview.setItem(row_index, column_index, QTableWidgetItem(str(value)))
+        layout.addWidget(preview, 1)
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        cancel_button = QPushButton("取消", dialog)
+        confirm_button = QPushButton("确认导入", dialog)
+        button_row.addWidget(cancel_button)
+        button_row.addWidget(confirm_button)
+        layout.addLayout(button_row)
+        cancel_button.clicked.connect(dialog.reject)
+        confirm_button.clicked.connect(dialog.accept)
+        return dialog.exec() == QDialog.Accepted
+
+    def _export_station_matrix(self):
+        try:
+            rows = self._validate_station_matrix_rows(self._collect_station_matrix_rows())
+        except Exception as exc:
+            QMessageBox.warning(self, "导出岗位矩阵", str(exc))
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出岗位矩阵", "M-Line岗位矩阵_v2.9.xlsx", "Excel (*.xlsx)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            self._write_station_matrix_xlsx(path, rows)
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        self.status.showMessage(f"岗位矩阵已导出：{path}", 5000)
+
+    def _import_station_matrix(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入岗位矩阵", "", "Excel (*.xlsx)")
+        if not path:
+            return
+        try:
+            version, rows = self._read_station_matrix_xlsx(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "导入岗位矩阵", str(exc))
+            return
+        if not self._confirm_station_matrix_import(os.path.basename(path), version, rows):
+            return
+
+        snapshot = self._collect_station_matrix_rows()
+        try:
+            self._apply_station_matrix_rows(rows)
+        except Exception as exc:
+            self._apply_station_matrix_rows(snapshot)
+            QMessageBox.critical(self, "导入失败", f"已恢复导入前的岗位矩阵。\n{exc}")
+            return
+        self.status.showMessage(f"已导入岗位矩阵：{os.path.basename(path)}", 5000)
+
     def _choose_color(self, row: int):
         dlg_col = QColorDialog.getColor(parent=self)
         if dlg_col.isValid():
@@ -2496,7 +2750,7 @@ class ExportTicketWindow(QMainWindow):
     def fill_sample(self):
         """
         排程模型 v2 示例：设备数量 + 所属线别 + A/B/C 工时。
-        工时 > 0 表示该车型经过该岗位；工时 = 0 表示该车型跳过该岗位。
+        工时 > 0 表示该车型在该岗位作业；工时 = 0 表示经过该岗位但不作业。
         """
         self.tbl.setRowCount(0)
         sample_rows = [
@@ -2731,7 +2985,7 @@ class ExportTicketWindow(QMainWindow):
             "<li>多工程组合票按『设备数量 + 所属线别 + 岗位设备 + A/B/C 工时』录入</li>"
             "<li>设备数量可选：1 / 2；设备数量为 2 时，所属线别固定为『双线』</li>"
             "<li>设备数量为 1 时，所属线别可选：1号线 / 2号线 / 双线共用</li>"
-            "<li>A/B/C 工时大于 0 表示该车型经过该岗位；工时为 0 表示该车型跳过该岗位</li>"
+            "<li>A/B/C 工时大于 0 表示该车型在该岗位作业；工时为 0 表示经过该岗位但不作业</li>"
             "<li>参与投车的车型，工时不能为空；未参与投车的车型，工时可以为空</li>"
             "<li>投车模式支持：按数量投车 / 按比例投车；按数量投车下可选择顺排(A→B→C)或交替混流</li>"
             "<li>顺排/交替混流模式下，A/B/C 填数量；按比例投车模式下，A/B/C 填比例，并用分析时间与目标节拍计算理论投车台数</li>"
