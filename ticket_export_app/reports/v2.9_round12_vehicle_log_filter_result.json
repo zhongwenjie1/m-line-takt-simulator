@@ -1,0 +1,19 @@
+{
+  "round": "12",
+  "subject": "车辆日志筛选和中文导出",
+  "scenario": "按数量A276/B306/C566，目标节拍58秒",
+  "source_segment_rows": 17220,
+  "one_vehicle_per_row_csv_rows": 1148,
+  "filters": {
+    "Car#11": 15,
+    "Car#12": 15,
+    "Car#1148": 15,
+    "actual_wait_rows": 6736,
+    "excess_wait_rows": 255,
+    "excess_wait_stations": ["L2++", "电检1", "空气悬挂+快充"]
+  },
+  "csv_export_matches_current_filter": true,
+  "ui_format": "一台车一行的简洁日志",
+  "csv_format": "CAR / TYPE / IN(s) / OUT(s) / WAIT(s) / FLOW(s) / 能力判断 / SEGMENTS",
+  "schedule_recalculated_by_filter": false
+}

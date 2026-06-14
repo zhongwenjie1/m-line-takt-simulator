@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QColor, QPen, QBrush, QFont
 import os
 import math
+import csv
 from datetime import datetime
 from html import escape
 from openpyxl import load_workbook
@@ -979,6 +980,149 @@ class ExportTicketWindow(QMainWindow):
         QApplication.clipboard().setText("\n".join(lines))
         self.status.showMessage("车辆日志已复制到剪贴板", 3000)
 
+    def _filter_vehicle_log_rows(self, rows, car_text="", car_type="全部", station="全部", wait_filter="全部"):
+        """筛选现有结构化日志，不重新运行排程。"""
+        query = str(car_text or "").strip().lower().replace("car#", "").replace("#", "")
+        selected_type = str(car_type or "全部").strip().upper()
+        selected_station = str(station or "全部").strip()
+        selected_wait = str(wait_filter or "全部").strip()
+
+        excess_wait_keys = set()
+        if selected_wait == "有节拍外等待":
+            _, cause_rows = self._build_wait_cause_log_rows()
+            for cause_row in cause_rows:
+                car_no = str(cause_row[0]).replace("Car#", "").strip()
+                waiting_station = str(cause_row[2]).strip()
+                excess_wait_keys.add((car_no, waiting_station))
+
+        filtered = []
+        for row in rows or []:
+            car_no = str(row[0]).strip()
+            vehicle_type = str(row[1]).strip().upper()
+            row_station = str(row[3]).strip()
+            if query and query != car_no.lower():
+                continue
+            if selected_type != "全部" and vehicle_type != selected_type:
+                continue
+            if selected_station != "全部" and row_station != selected_station:
+                continue
+            if selected_wait == "有实际等待":
+                try:
+                    actual_wait = float(row[11] or 0.0) + float(row[12] or 0.0)
+                except Exception:
+                    actual_wait = 0.0
+                if actual_wait <= 1e-9:
+                    continue
+            elif selected_wait == "有节拍外等待" and (car_no, row_station) not in excess_wait_keys:
+                continue
+            filtered.append(row)
+        return filtered
+
+    def _export_vehicle_log_csv(self, columns, rows, parent=None):
+        if not rows:
+            QMessageBox.information(parent or self, "导出车辆日志", "当前筛选结果为空，无可导出内容。")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            parent or self,
+            "导出当前筛选结果",
+            "M-Line车辆日志_筛选结果.csv",
+            "CSV (*.csv)",
+        )
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8-sig", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(columns)
+            writer.writerows(rows)
+        self.status.showMessage(f"车辆日志已导出：{path}", 5000)
+
+    def _build_compact_vehicle_log_csv_rows(self, schedule_rows):
+        """将当前筛选命中的车辆整理为一车一行CSV。"""
+        if not schedule_rows:
+            return [], []
+
+        def _to_float(row, *keys):
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    try:
+                        return float(value)
+                    except Exception:
+                        continue
+            return 0.0
+
+        def _to_int(value, default=0):
+            try:
+                return int(float(value))
+            except Exception:
+                return default
+
+        def _fmt_seconds(value):
+            return f"{float(value or 0.0):.1f}"
+
+        def _station(row):
+            return str(row.get("step_display", row.get("station", row.get("group", "岗位"))) or "岗位")
+
+        grouped = {}
+        for row in schedule_rows:
+            car = row.get("car", row.get("car_no", row.get("car_index", "")))
+            grouped.setdefault(car, []).append(row)
+
+        try:
+            target_takt = float(self.spn_target_takt.value())
+        except Exception:
+            target_takt = 0.0
+        capacity_by_car = {
+            int(item["car"]): item
+            for item in compute_car_capacity_results(schedule_rows, target_takt)
+        }
+
+        columns = ["CAR", "TYPE", "IN(s)", "OUT(s)", "WAIT(s)", "FLOW(s)", "能力判断", "SEGMENTS"]
+        output = []
+        for car, car_rows in sorted(grouped.items(), key=lambda item: _to_int(item[0], 999999)):
+            car_rows.sort(key=lambda row: (
+                _to_float(row, "start", "start_time"),
+                _to_int(row.get("step_seq", row.get("seq", 0))),
+            ))
+            first_start = _to_float(car_rows[0], "start", "start_time")
+            final_finish = _to_float(car_rows[-1], "depart", "end", "svc_finish", "finish")
+            total_wait = sum(
+                _to_float(row, "launch_wait") + _to_float(row, "block_wait")
+                for row in car_rows
+            )
+            car_type = str(
+                car_rows[0].get("car_type", car_rows[0].get("duration_source", car_rows[0].get("vehicle_type", "")))
+                or ""
+            )
+            capacity_result = capacity_by_car.get(_to_int(car), {})
+            capacity_text = str(capacity_result.get("capacity_status", "未设定目标") or "未设定目标")
+            if capacity_text == "能力超目标":
+                capacity_text += f"：{capacity_result.get('over_capacity_station_text', '无')}"
+
+            segments = []
+            for row in car_rows:
+                step_seq = row.get("step_seq", row.get("seq", ""))
+                step_label = f"ST{step_seq}" if step_seq not in (None, "") else "ST?"
+                segments.append(
+                    f"{step_label} {_station(row)}("
+                    f"开:{_fmt_seconds(_to_float(row, 'start', 'start_time'))}s "
+                    f"加:{_fmt_seconds(_to_float(row, 'dur', 'duration'))}s "
+                    f"等前:{_fmt_seconds(_to_float(row, 'launch_wait'))}s "
+                    f"等后:{_fmt_seconds(_to_float(row, 'block_wait'))}s)"
+                )
+
+            output.append([
+                f"Car#{car}",
+                car_type,
+                _fmt_seconds(first_start),
+                _fmt_seconds(final_finish),
+                _fmt_seconds(total_wait),
+                _fmt_seconds(max(0.0, final_finish - first_start)),
+                capacity_text,
+                " | ".join(segments),
+            ])
+        return columns, output
+
     def _on_vehicle_summary_link_activated(self, link):
         if str(link or "") == "wait-cause-details":
             self._show_vehicle_log_placeholder(initial_tab="cause")
@@ -1035,8 +1179,8 @@ class ExportTicketWindow(QMainWindow):
         layout.setSpacing(10)
 
         info = QLabel(
-            "车辆明细 / 调试日志：按车辆维度一车一行显示；"
-            "用于查看每台车的完整工序流转、等待与跳过岗位。"
+            "车辆明细 / 调试日志：车辆过程保持一台车一行，连续显示完整工序流转与等待；"
+            "筛选用于快速定位车辆，CSV导出与界面一致，保持一台车一行。"
             "其中投入等待表示进入首工程前的等待，完工后等待表示加工完成后等待下一工程接收。"
         )
         info.setWordWrap(True)
@@ -1046,9 +1190,41 @@ class ExportTicketWindow(QMainWindow):
         tabs = QTabWidget(dialog)
         layout.addWidget(tabs, 1)
 
-        text_edit = QPlainTextEdit(dialog)
+        vehicle_page = QWidget(dialog)
+        vehicle_layout = QVBoxLayout(vehicle_page)
+        vehicle_layout.setContentsMargins(0, 0, 0, 0)
+        vehicle_layout.setSpacing(8)
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        filter_row.addWidget(QLabel("车号：", vehicle_page))
+        car_filter = QLineEdit(vehicle_page)
+        car_filter.setPlaceholderText("例如 11 或 Car#11")
+        car_filter.setMaximumWidth(150)
+        filter_row.addWidget(car_filter)
+        filter_row.addWidget(QLabel("车型：", vehicle_page))
+        type_filter = QComboBox(vehicle_page)
+        type_filter.addItems(["全部", "A", "B", "C"])
+        filter_row.addWidget(type_filter)
+        filter_row.addWidget(QLabel("工位：", vehicle_page))
+        station_filter = QComboBox(vehicle_page)
+        vehicle_columns, all_vehicle_rows = self._build_vehicle_log_rows()
+        station_filter.addItem("全部")
+        station_filter.addItems(sorted({str(item[3]) for item in all_vehicle_rows if str(item[3]).strip()}))
+        station_filter.setMinimumWidth(170)
+        filter_row.addWidget(station_filter)
+        filter_row.addWidget(QLabel("等待：", vehicle_page))
+        wait_filter = QComboBox(vehicle_page)
+        wait_filter.addItems(["全部", "有实际等待", "有节拍外等待"])
+        filter_row.addWidget(wait_filter)
+        result_count = QLabel(vehicle_page)
+        result_count.setStyleSheet("color:#475569;font-size:12px;")
+        filter_row.addWidget(result_count)
+        filter_row.addStretch()
+        vehicle_layout.addLayout(filter_row)
+
+        text_edit = QPlainTextEdit(vehicle_page)
         text_edit.setReadOnly(True)
-        text_edit.setPlainText(self._build_schedule_debug_log(rows, limit=9999))
         text_edit.setStyleSheet(
             "QPlainTextEdit{"
             "font-family: Menlo, Monaco, Consolas, monospace;"
@@ -1058,7 +1234,8 @@ class ExportTicketWindow(QMainWindow):
             "border: 1px solid #cbd5e1;"
             "}"
         )
-        tabs.addTab(text_edit, "车辆过程")
+        vehicle_layout.addWidget(text_edit, 1)
+        tabs.addTab(vehicle_page, "车辆过程")
 
         cause_columns, cause_rows = self._build_wait_cause_log_rows()
         cause_table = QTableWidget(len(cause_rows), len(cause_columns), dialog)
@@ -1078,20 +1255,63 @@ class ExportTicketWindow(QMainWindow):
 
         button_row = QHBoxLayout()
         button_row.addStretch()
-        btn_copy = QPushButton("复制全部日志", dialog)
+        btn_export = QPushButton("导出当前筛选", dialog)
+        btn_copy = QPushButton("复制当前结果", dialog)
         btn_close = QPushButton("关闭", dialog)
+        button_row.addWidget(btn_export)
         button_row.addWidget(btn_copy)
         button_row.addWidget(btn_close)
         layout.addLayout(button_row)
+
+        current_vehicle_rows = []
+        current_vehicle_text = ""
+
+        def _refresh_vehicle_log():
+            nonlocal current_vehicle_rows, current_vehicle_text
+            current_vehicle_rows = self._filter_vehicle_log_rows(
+                all_vehicle_rows,
+                car_filter.text(),
+                type_filter.currentText(),
+                station_filter.currentText(),
+                wait_filter.currentText(),
+            )
+            selected_cars = {str(item[0]) for item in current_vehicle_rows}
+            selected_rows = [
+                row for row in rows
+                if str(row.get("car", row.get("car_no", row.get("car_index", "")))) in selected_cars
+            ]
+            current_vehicle_text = self._build_schedule_debug_log(selected_rows, limit=9999)
+            text_edit.setPlainText(current_vehicle_text)
+            result_count.setText(f"{len(selected_cars)}台")
 
         def _copy_current_tab():
             if tabs.currentWidget() is cause_table:
                 self._copy_vehicle_log_to_clipboard(cause_columns, cause_rows)
             else:
-                QApplication.clipboard().setText(text_edit.toPlainText())
+                QApplication.clipboard().setText(current_vehicle_text)
+                self.status.showMessage("车辆日志已复制到剪贴板", 3000)
 
+        def _export_current_tab():
+            if tabs.currentWidget() is cause_table:
+                self._export_vehicle_log_csv(cause_columns, cause_rows, dialog)
+            else:
+                selected_cars = {str(item[0]) for item in current_vehicle_rows}
+                selected_rows = [
+                    row for row in rows
+                    if str(row.get("car", row.get("car_no", row.get("car_index", "")))) in selected_cars
+                ]
+                compact_columns, compact_rows = self._build_compact_vehicle_log_csv_rows(selected_rows)
+                self._export_vehicle_log_csv(compact_columns, compact_rows, dialog)
+
+        car_filter.textChanged.connect(_refresh_vehicle_log)
+        type_filter.currentTextChanged.connect(_refresh_vehicle_log)
+        station_filter.currentTextChanged.connect(_refresh_vehicle_log)
+        wait_filter.currentTextChanged.connect(_refresh_vehicle_log)
+        btn_export.clicked.connect(_export_current_tab)
         btn_copy.clicked.connect(_copy_current_tab)
         btn_close.clicked.connect(dialog.accept)
+
+        _refresh_vehicle_log()
 
         dialog.exec()
 
@@ -1378,9 +1598,9 @@ class ExportTicketWindow(QMainWindow):
             "车辆明细 / 调试日志（按车辆维度）",
             "说明：能力判断按车型工时÷有效设备能力与目标节拍比较；工时为0的流转节点不参加判断。",
             "字段说明：IN=实际投车时间，OUT=下线完成时间，WAIT=单车总等待，FLOW=单车贯通时间；"
-            "单车总等待包含投入等待和各工程完工后等待。",
+            "SEGMENTS中的等前=投入等待，等后=加工完成后等待下一工程接收。",
             "-" * 120,
-            f"{'CAR':<8}{'TYPE':<6}{'IN(s)':>10}{'OUT(s)':>10}{'WAIT(s)':>10}{'FLOW(s)':>10}  {'能力判断':<18}  工程过程",
+            f"{'CAR':<8}{'TYPE':<6}{'IN(s)':>10}{'OUT(s)':>10}{'WAIT(s)':>10}{'FLOW(s)':>10}  {'能力判断':<18}  SEGMENTS",
             "-" * 120,
         ]
 
@@ -1416,8 +1636,8 @@ class ExportTicketWindow(QMainWindow):
                 block_wait = _row_block_wait(row)
                 step_label = f"ST{step_seq}" if step_seq not in (None, "") else "ST?"
                 step_parts.append(
-                    f"{step_label} {station}(start:{_fmt_sec(start)}s 加工工时:{_fmt_sec(dur)}s "
-                    f"投入等待:{_fmt_sec(launch_wait)}s 完工后等待:{_fmt_sec(block_wait)}s)"
+                    f"{step_label} {station}(开:{_fmt_sec(start)}s 加:{_fmt_sec(dur)}s "
+                    f"等前:{_fmt_sec(launch_wait)}s 等后:{_fmt_sec(block_wait)}s)"
                 )
 
                 try:
