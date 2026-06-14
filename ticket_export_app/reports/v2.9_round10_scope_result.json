@@ -1,0 +1,24 @@
+{
+  "round": "10",
+  "subject": "过程值与终值分离",
+  "algorithm_changed": false,
+  "ratio_terminal_scope": {
+    "analysis_seconds": 69000,
+    "output_vehicles": 1024,
+    "capacity_meets": 206,
+    "overall_takt": 66.60361681329424,
+    "actual_wait": 199015.5,
+    "excess_wait": 3126.0
+  },
+  "process_values": {
+    "0": {"actual_wait": 0.0, "excess_wait": 0.0},
+    "1340": {"actual_wait": 1250.5, "excess_wait": 18.5},
+    "1830": {"actual_wait": 2399.5, "excess_wait": 39.0},
+    "69000": {"actual_wait": 199015.5, "excess_wait": 3126.0}
+  },
+  "display_boundary": {
+    "model_result": "fixed terminal scope",
+    "simulation_bar": "current playback process",
+    "schedule_values_unchanged": true
+  }
+}

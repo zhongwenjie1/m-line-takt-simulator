@@ -416,10 +416,10 @@ class ExportTicketWindow(QMainWindow):
         sim_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #223042;")
         sim_control_row.addWidget(sim_title)
         sim_control_row.addStretch(1)
-        self.lbl_sim_time = QLabel("仿真时间：0.0s / 0.0s")
+        self.lbl_sim_time = QLabel("当前播放：0.0s / 0.0s")
         sim_control_row.addWidget(self.lbl_sim_time)
         sim_control_row.addSpacing(10)
-        self.lbl_sim_total_wait = QLabel("总等待：0s")
+        self.lbl_sim_total_wait = QLabel("当前累计实际等待：0s")
         self.lbl_sim_total_wait.hide()
         sim_control_row.addSpacing(10)
         self.sim_progress = QProgressBar(self.page_multi_result)
@@ -848,7 +848,7 @@ class ExportTicketWindow(QMainWindow):
             float(getattr(self, "sim_time", 0.0) or 0.0), target_takt
         )
         actual_wait = self._fmt_analysis_num(metrics.get("total_actual_wait", 0.0))
-        self.lbl_sim_total_wait.setText(f"累计实际等待：{actual_wait}s")
+        self.lbl_sim_total_wait.setText(f"当前累计实际等待：{actual_wait}s")
     def _sim_speed_value(self) -> float:
         """读取仿真倍速。"""
         if not hasattr(self, "cmb_sim_speed"):
@@ -865,7 +865,7 @@ class ExportTicketWindow(QMainWindow):
             return
         current = float(getattr(self, "sim_time", 0.0) or 0.0)
         total = float(getattr(self, "last_max_finish", 0.0) or 0.0)
-        self.lbl_sim_time.setText(f"仿真时间：{current:.1f}s / {total:.1f}s")
+        self.lbl_sim_time.setText(f"当前播放：{current:.1f}s / {total:.1f}s")
         if hasattr(self, "sim_progress"):
             if total > 0:
                 progress_value = int(max(0.0, min(1.0, current / total)) * 1000)
@@ -1649,7 +1649,7 @@ class ExportTicketWindow(QMainWindow):
             f"<div style='font-size:12px;line-height:1.24;color:#334155;'>{waiting_html}</div>"
             "</td>"
             "<td width='33%' style='width:33%;vertical-align:top;padding-left:8px;border-left:1px solid #e2e8f0;'>"
-            "<div style='font-size:12px;font-weight:700;color:#334155;margin-bottom:2px;'>模型提示</div>"
+            "<div style='font-size:12px;font-weight:700;color:#334155;margin-bottom:2px;'>当前等待位置</div>"
             f"<div style='font-size:12px;line-height:1.24;color:#334155;'>{blocking_html}</div>"
             "</td>"
             "</tr>"
@@ -3076,7 +3076,6 @@ class ExportTicketWindow(QMainWindow):
         excess_wait = float(realtime.get("total_excess_wait", 0.0) or 0.0)
         actual_wait_text = self._fmt_analysis_num(actual_wait)
         excess_wait_text = self._fmt_analysis_num(excess_wait)
-        current_time = self._fmt_analysis_num(realtime.get("current_time", 0.0))
         risk_parts = []
         capacity_over_stations = realtime.get("capacity_over_stations", []) or []
         if capacity_over_stations:
@@ -3176,8 +3175,15 @@ class ExportTicketWindow(QMainWindow):
             _metric_card("整体节拍", f"{overall_takt_text}/{target_takt_text}"),
             _metric_card("累计节拍外等待", f"{excess_wait_text}s"),
         ]
+        if is_ratio:
+            result_scope_title = f"模型结果（分析窗口终值：{analysis_minutes:g}分钟）"
+            result_scope_note = f"统计范围：前{analysis_minutes:g}分钟终值"
+        else:
+            result_scope_title = f"模型结果（目标批次终值：{denominator_vehicle_count}台）"
+            result_scope_note = f"统计范围：目标批次{denominator_vehicle_count}台终值"
+
         right_html = (
-            "<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;padding-right:92px;'>模型结果</div>"
+            f"<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;padding-right:92px;'>{result_scope_title}</div>"
             "<div style='margin-bottom:2px;'>"
             "<table width='100%' cellspacing='2' cellpadding='0' style='width:100%;'>"
             "<tr>"
@@ -3185,7 +3191,7 @@ class ExportTicketWindow(QMainWindow):
             + "</tr></table>"
             "</div>"
             f"<div style='font-size:11px;color:#334155;line-height:1.3;margin-top:2px;margin-bottom:0;'>"
-            f"当前仿真时间 {current_time}s｜累计实际等待 {actual_wait_text}s｜实时节拍见仿真栏"
+            f"{result_scope_note}｜累计实际等待 {actual_wait_text}s"
             "</div>"
             f"<div style='font-size:12px;color:#334155;line-height:1.4;margin-top:3px;'>"
             f"<span style='font-weight:700;color:#0f172a;'>风险提示：</span>{risk_hint_text}"
