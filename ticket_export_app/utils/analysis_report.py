@@ -186,7 +186,7 @@ def _write_overview(workbook, payload, records):
     sheet["A2"] = "导出时间"
     sheet["B2"] = payload["exported_at"]
     sheet["A3"] = "统计范围"
-    sheet["B3"] = payload["scope_note"]
+    sheet["B3"] = payload.get("scope_full_text", payload["scope_note"])
     sheet.merge_cells("B2:D2")
     sheet.merge_cells("B3:D3")
 
@@ -249,7 +249,7 @@ def _write_vehicle_details(workbook, payload, records):
     sheet = workbook.create_sheet("车辆时间明细")
     headers = [
         "下线顺序", "统计归属", "CAR", "TYPE", "投车时间 IN(s)", "下线时间 OUT(s)",
-        "单车贯通 FLOW(s)", "车辆总等待 WAIT(s)", "截止统计时点已发生完工后等待(s)",
+        "单车贯通 FLOW(s)", "车辆总等待 WAIT(s)\n（含投车前等待）", "截止统计时点已发生完工后等待(s)",
         "截止统计时点节拍外等待(s)", "前一台下线车辆", "相邻下线间隔(s)",
         "与目标节拍差值(s)", "延误增量(s)", "提前补偿(s)", "累计下线间隔(s)",
         "单车等式差(s)", "车型能力观察（静态）", "工程记录 SEGMENTS",
@@ -300,7 +300,7 @@ def _write_definitions(workbook, payload):
     sheet["B2"] = "汇总结果必须能从“车辆时间明细”逐行复算；本页只解释口径，不产生新的排程结果。"
     sheet.merge_cells("B2:C2")
     sheet["A3"] = "统计范围"
-    sheet["B3"] = payload["scope_note"]
+    sheet["B3"] = payload.get("scope_full_text", payload["scope_note"])
     sheet.merge_cells("B3:C3")
     _table_header(sheet, 5, ("名称", "大白话解释", "核对方法 / 注意事项"))
     definitions = [

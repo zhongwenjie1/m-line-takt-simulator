@@ -3389,15 +3389,16 @@ class ExportTicketWindow(QMainWindow):
                     rec = capacity_over_station_map.setdefault(station_name, {
                         "station": station_name,
                         "vehicle_count": 0,
-                        "by_type": {"A": 0, "B": 0, "C": 0},
+                        "by_type_over": {"A": 0.0, "B": 0.0, "C": 0.0},
                         "max_over": 0.0,
                     })
                     rec["vehicle_count"] += 1
-                    if car_type in rec["by_type"]:
-                        rec["by_type"][car_type] += 1
-                    rec["max_over"] = max(
-                        rec["max_over"], float(over_item.get("over_time", 0.0) or 0.0)
-                    )
+                    over_time = float(over_item.get("over_time", 0.0) or 0.0)
+                    if car_type in rec["by_type_over"]:
+                        rec["by_type_over"][car_type] = max(
+                            rec["by_type_over"][car_type], over_time
+                        )
+                    rec["max_over"] = max(rec["max_over"], over_time)
         capacity_over_stations = sorted(
             capacity_over_station_map.values(),
             key=lambda item: (-int(item.get("vehicle_count", 0) or 0), str(item.get("station", ""))),
@@ -3893,8 +3894,9 @@ class ExportTicketWindow(QMainWindow):
         capacity_items = []
         for item in list(realtime.get("capacity_over_stations", []) or []):
             station_name = item.get("station", "未知工程")
+            by_type_over = item.get("by_type_over", {}) or {}
             for vehicle_type in ("A", "B", "C"):
-                per_type = float((item.get("by_type", {}) or {}).get(vehicle_type, 0.0) or 0.0)
+                per_type = float(by_type_over.get(vehicle_type, 0.0) or 0.0)
                 if per_type > 0:
                     capacity_items.append((per_type, station_name, vehicle_type))
         capacity_items.sort(key=lambda item: (-item[0], item[1], item[2]))
@@ -3940,7 +3942,7 @@ class ExportTicketWindow(QMainWindow):
             "total_actual_wait": float(model_summary.get("total_actual_wait", 0.0) or 0.0),
             "total_excess_wait": float(model_summary.get("total_excess_wait", 0.0) or 0.0),
             "excess_station_text": excess_station_text,
-            "capacity_station_text": "；".join(capacity_parts),
+            "capacity_station_text": "｜".join(capacity_parts),
             "net_takt_delta_text": net_takt_delta_text,
             "theoretical_launch_count": theoretical_count,
             "simulation_buffer_count": simulation_buffer_count,
