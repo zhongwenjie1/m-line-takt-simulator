@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QSpinBox, QComboBox, QLineEdit, QColorDialog,
     QTabWidget, QFrame, QAbstractItemView, QHeaderView, QGraphicsScene, QGraphicsView, QProgressBar,
     QScrollArea,
-    QPlainTextEdit, QTextBrowser
+    QPlainTextEdit
 )
 from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QColor, QPen, QBrush, QFont
@@ -32,6 +32,11 @@ from core.analysis import (
     compute_car_capacity_results,
 )
 from core.input_parser import parse_multi_project_inputs as core_parse_multi_project_inputs
+from utils.analysis_report import (
+    build_vehicle_records,
+    default_export_timestamp,
+    write_analysis_report,
+)
 from utils.result_scope_text import build_result_scope_text
 
 
@@ -384,10 +389,14 @@ class ExportTicketWindow(QMainWindow):
             "line-height: 1.5;"
         )
 
-        self.btn_model_result_explanation = QPushButton("结果说明", self.lbl_vehicle_summary)
-        self.btn_model_result_explanation.setFixedHeight(24)
-        self.btn_model_result_explanation.setMinimumWidth(80)
-        self.btn_model_result_explanation.setStyleSheet(
+        self.btn_export_analysis_report = QPushButton("导出分析报告", self.lbl_vehicle_summary)
+        self.btn_export_analysis_report.setFixedHeight(24)
+        self.btn_export_analysis_report.setMinimumWidth(104)
+        self.btn_export_analysis_report.setToolTip(
+            "导出结果总览、车辆时间明细和计算口径说明。\n"
+            "报告直接使用当前分析结果，不会重新运行排程。"
+        )
+        self.btn_export_analysis_report.setStyleSheet(
             "QPushButton {"
             "background:#ffffff;"
             "border:1px solid #cbd5e1;"
@@ -398,7 +407,7 @@ class ExportTicketWindow(QMainWindow):
             "}"
             "QPushButton:hover { background:#f8fafc; }"
         )
-        self.btn_model_result_explanation.raise_()
+        self.btn_export_analysis_report.raise_()
 
         vehicle_summary_layout.addWidget(self.lbl_vehicle_summary, 1)
 
@@ -662,7 +671,7 @@ class ExportTicketWindow(QMainWindow):
         self.btn_go_result_page.clicked.connect(lambda: self.multi_tabs.setCurrentWidget(self.page_multi_result_scroll))
         self.btn_analyze.clicked.connect(self.do_analyze)
         self.btn_export.clicked.connect(self.do_export)
-        self.btn_model_result_explanation.clicked.connect(self._show_model_result_explanation_dialog)
+        self.btn_export_analysis_report.clicked.connect(self._export_analysis_report)
         self.lbl_vehicle_summary.linkActivated.connect(self._on_vehicle_summary_link_activated)
         self.act_help.triggered.connect(self.show_help)
         self.btn_sim_play.clicked.connect(self._start_simulation)
@@ -683,7 +692,7 @@ class ExportTicketWindow(QMainWindow):
     def _set_analysis_result_available(self, available: bool):
         """统一控制所有依赖最近一次分析结果的入口。"""
         for name in (
-            "btn_model_result_explanation",
+            "btn_export_analysis_report",
             "btn_sim_play",
             "btn_sim_pause",
             "btn_sim_reset",
@@ -3730,7 +3739,7 @@ class ExportTicketWindow(QMainWindow):
         result_scope_note = result_scope_text["note"]
 
         right_html = (
-            f"<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;padding-right:92px;'>{result_scope_title}</div>"
+            f"<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;padding-right:118px;'>{result_scope_title}</div>"
             "<div style='margin-bottom:2px;'>"
             "<table width='100%' cellspacing='2' cellpadding='0' style='width:100%;'>"
             "<tr>"
@@ -3773,12 +3782,12 @@ class ExportTicketWindow(QMainWindow):
             "</table>"
         )
         self.lbl_vehicle_summary.setText(html)
-        self._position_model_result_explanation_button()
+        self._position_analysis_report_button()
 
-    def _position_model_result_explanation_button(self):
-        if not hasattr(self, "btn_model_result_explanation") or not hasattr(self, "lbl_vehicle_summary"):
+    def _position_analysis_report_button(self):
+        if not hasattr(self, "btn_export_analysis_report") or not hasattr(self, "lbl_vehicle_summary"):
             return
-        button = self.btn_model_result_explanation
+        button = self.btn_export_analysis_report
         label = self.lbl_vehicle_summary
         margin = 14
         x = max(margin, label.width() - button.width() - margin)
@@ -3788,154 +3797,160 @@ class ExportTicketWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._position_model_result_explanation_button()
+        self._position_analysis_report_button()
 
-    def _get_model_result_explanation_anchor_widget(self):
-        if hasattr(self, "lbl_vehicle_summary"):
-            return self.lbl_vehicle_summary
-        return self
+    def _build_analysis_report_payload(self):
+        """整理当前分析快照供Excel导出，不重新运行排程。"""
+        rows = list(getattr(self, "last_schedule_rows", []) or [])
+        analysis = getattr(self, "last_analysis", None)
+        model_summary = dict(getattr(self, "_last_model_result_summary", None) or {})
+        if not rows or not isinstance(analysis, dict) or not model_summary:
+            raise ValueError("请先完成一次分析，再导出分析报告。")
 
-    def _build_model_result_explanation_text(self, summary):
-        if not summary:
-            return ""
-
-        def _fmt_num(value, default="—"):
-            if value is None:
-                return default
-            return self._fmt_analysis_num(value)
-
-        output_count = int(summary.get("output_count", 0) or 0)
-        target_takt = summary.get("target_takt", 0.0)
-        first_out = summary.get("first_out")
-        last_out = summary.get("last_out")
-        last_output_car_no = summary.get("last_output_car_no")
-        last_output_car_out = summary.get("last_output_car_out")
-        overall_takt = summary.get("overall_takt")
-        total_actual_wait = summary.get("total_actual_wait", summary.get("total_block_wait", 0.0))
-        total_excess_wait = summary.get("total_excess_wait", 0.0)
-        risk_text = str(summary.get("risk_text", "") or "暂无明显风险")
-        completion_time = summary.get("completion_time", last_output_car_out)
-        completion_card_title = str(summary.get("completion_card_title", "完成时刻") or "完成时刻")
-        scope_text = summary.get("result_scope_text")
-        if not isinstance(scope_text, dict):
-            scope_text = build_result_scope_text(
-                is_ratio_mode=bool(summary.get("is_ratio_mode", False)),
-                output_count=output_count,
-                analysis_time_seconds=summary.get("analysis_time_seconds", 0.0),
-                last_output_car_no=last_output_car_no,
-                last_output_car_out=last_output_car_out,
+        analysis_summary = dict(analysis.get("summary", {}) or {})
+        is_ratio = bool(model_summary.get("is_ratio_mode", False))
+        analysis_seconds = float(model_summary.get("analysis_time_seconds", 0.0) or 0.0)
+        theoretical_count = int(
+            analysis_summary.get(
+                "theoretical_launch_count",
+                getattr(self, "current_theoretical_launch_count", len(self._sim_car_rows())),
             )
-
-        if completion_time is None:
-            completion_calc = f"当前没有可用于显示{completion_card_title}的下线车辆，暂显示为 -。"
-        else:
-            completion_calc = f"当前{completion_card_title}为 {_fmt_num(completion_time)}s。"
-
-        if output_count < 2 or first_out is None or last_out is None or overall_takt is None:
-            overall_calc = "当前下线车辆不足 2台，无法计算相邻下线间隔平均值，所以整体节拍暂显示为 -。"
-        else:
-            overall_calc = (
-                f"（{_fmt_num(last_out)} - {_fmt_num(first_out)}）÷（{output_count} - 1）≈ "
-                f"{_fmt_num(overall_takt)}s/台；目标节拍为 {_fmt_num(target_takt)}s/台，"
-                f"所以整体节拍显示为 {_fmt_num(overall_takt)}/{_fmt_num(target_takt)}。"
-            )
-
-        wait_calc = (
-            f"本次所有车辆在工程完成后实际停留等待合计为 {_fmt_num(total_actual_wait)}s；"
-            f"扣除各等待工程可接纳上限后，累计节拍外等待为 {_fmt_num(total_excess_wait)}s。"
+            or 0
         )
-        risk_calc = f"当前风险提示显示为：{escape(risk_text)}。"
+        simulation_buffer_count = int(
+            analysis_summary.get(
+                "simulation_buffer_count",
+                getattr(self, "current_simulation_buffer_count", 0),
+            )
+            or 0
+        )
+        target_takt = float(model_summary.get("target_takt", self.spn_target_takt.value()) or 0.0)
+        capacity_results = list(analysis.get("car_capacity_results", []) or [])
+        if not capacity_results:
+            capacity_results = compute_car_capacity_results(rows, target_takt)
 
-        return f"""
-<div style="font-size:13px; line-height:1.3; color:#0f172a;">
-  <div style="font-size:16px; font-weight:700; margin-bottom:8px;">模型结果说明</div>
-  <div style="margin-bottom:10px; color:#334155;">
-    以下内容用于解释当前模型结果的计算来源，帮助理解当前排程表现。
-  </div>
+        records = build_vehicle_records(
+            rows,
+            is_ratio_mode=is_ratio,
+            analysis_time_seconds=analysis_seconds,
+            theoretical_launch_count=theoretical_count,
+            report_cutoff_seconds=(
+                analysis_seconds
+                if is_ratio
+                else float(getattr(self, "last_max_finish", 0.0) or 0.0)
+            ),
+            target_takt=target_takt,
+            capacity_results=capacity_results,
+        )
+        scope_records = [
+            record for record in records
+            if record["scope"] == ("分析窗口内" if is_ratio else "目标批次")
+        ]
+        completion_time = scope_records[-1]["car_out"] if scope_records else None
+        last_vehicle_text = (
+            f"最后完成：{scope_records[-1]['car_label']}（{scope_records[-1]['car_type']}）"
+            if scope_records else "当前统计范围无下线车辆"
+        )
 
-  <div style="margin-top:8px;"><b>1. 下线车辆</b></div>
-  <div>{escape(scope_text["vehicle_definition"])}</div>
-  <div>{escape(scope_text["vehicle_rule"])}</div>
-  <div>{escape(scope_text["vehicle_current"])}</div>
+        target_records = [
+            record for record in records
+            if not is_ratio or record["car"] <= theoretical_count
+        ]
+        target_batch_actual_finish = max(
+            (record["car_out"] for record in target_records),
+            default=0.0,
+        )
+        planned_finish = analysis_summary.get("planned_n_finish_time")
+        if planned_finish is None:
+            planned_finish = analysis_summary.get("target_batch_time", 0.0)
+        target_batch_planned_finish = float(planned_finish or 0.0)
 
-  <div style="margin-top:8px;"><b>2. {escape(completion_card_title)}</b></div>
-  <div>表示：当前统计范围内最后完成下线车辆的实际下线时间。</div>
-  <div>计算口径：取当前统计范围内全部车辆下线时间的最大值。</div>
-  <div>本次计算：{completion_calc}</div>
+        overall_takt = model_summary.get("overall_takt")
+        overall_takt_text = (
+            f"{self._fmt_analysis_num(overall_takt)}/{self._fmt_analysis_num(target_takt)}"
+            if overall_takt is not None else f"-/{self._fmt_analysis_num(target_takt)}"
+        )
+        delays = 0.0
+        advances = 0.0
+        for index in range(1, len(scope_records)):
+            gap = scope_records[index]["car_out"] - scope_records[index - 1]["car_out"]
+            delta = gap - target_takt
+            if delta >= 0:
+                delays += delta
+            else:
+                advances += -delta
+        net_delta = delays - advances
+        net_takt_delta_text = (
+            f"延误 {delays:.1f}s - 提前补偿 {advances:.1f}s = {net_delta:+.1f}s"
+            if len(scope_records) >= 2 else "-"
+        )
 
-  <div style="margin-top:8px;"><b>3. 整体节拍</b></div>
-  <div>{escape(scope_text["overall_definition"])}</div>
-  <div>计算口径：整体节拍 =（最后一台下线完成时间 - 第一台下线完成时间）÷（下线车辆数 - 1），即全部相邻下线间隔的平均值。</div>
-  <div>本次计算：{overall_calc}</div>
+        excess_station_text = "；".join(
+            f"{item.get('station', '未知工程')} {float(item.get('wait_time', 0.0) or 0.0):.1f}s"
+            for item in list(model_summary.get("excess_wait_by_station", []) or [])[:3]
+        )
+        realtime = self._build_realtime_model_result(float(getattr(self, "last_max_finish", 0.0) or 0.0))
+        capacity_parts = []
+        for item in list(realtime.get("capacity_over_stations", []) or []):
+            by_type = dict(item.get("by_type", {}) or {})
+            types = "/".join(
+                vehicle_type for vehicle_type in ("A", "B", "C")
+                if int(by_type.get(vehicle_type, 0) or 0) > 0
+            )
+            capacity_parts.append(
+                f"{item.get('station', '未知工程')} {types} "
+                f"{float(item.get('max_over', 0.0) or 0.0):.1f}s/台".strip()
+            )
 
-  <div style="margin-top:8px;"><b>4. 累计实际等待与累计节拍外等待</b></div>
-  <div>表示：累计实际等待是车辆加工完成后真实停留的总时间；累计节拍外等待是其中超过当前工程可接纳上限、无法在目标节拍内吸收的部分。</div>
-  <div>计算口径：可接纳上限 = 有效设备数 × 目标节拍；节拍外等待 = max（0，实际等待 - 可接纳上限）。</div>
-  <div>本次计算：{wait_calc}</div>
+        scope_text = dict(model_summary.get("result_scope_text", {}) or {})
+        return {
+            "exported_at": default_export_timestamp(),
+            "is_ratio_mode": is_ratio,
+            "scope_note": str(scope_text.get("note", "当前分析结果") or "当前分析结果"),
+            "output_label": "窗口内下线" if is_ratio else "下线车辆",
+            "output_count": len(scope_records),
+            "completion_label": "窗口末台下线" if is_ratio else "批次总完成时刻",
+            "completion_time": completion_time,
+            "last_vehicle_text": last_vehicle_text,
+            "target_takt": target_takt,
+            "overall_takt_text": overall_takt_text,
+            "total_actual_wait": float(model_summary.get("total_actual_wait", 0.0) or 0.0),
+            "total_excess_wait": float(model_summary.get("total_excess_wait", 0.0) or 0.0),
+            "excess_station_text": excess_station_text,
+            "capacity_station_text": "；".join(capacity_parts),
+            "net_takt_delta_text": net_takt_delta_text,
+            "theoretical_launch_count": theoretical_count,
+            "simulation_buffer_count": simulation_buffer_count,
+            "target_batch_planned_finish": target_batch_planned_finish,
+            "target_batch_actual_finish": target_batch_actual_finish,
+            "vehicle_records": records,
+            "scope_records": scope_records,
+        }
 
-  <div style="margin-top:8px;"><b>5. 主要关注</b></div>
-  <div>表示：简要提示节拍外等待主要发生在哪里，以及哪些车型的工程加工工时超过能力上限。</div>
-  <div>计算口径：主界面只显示摘要；逐车等待证据和完整原因链在车辆明细中查询。</div>
-  <div>本次计算：{risk_calc}</div>
-
-  <div style="margin-top:10px; color:#475569;">
-    说明：以上内容用于帮助理解当前模型结果，不代表最终业务判定。
-  </div>
-</div>
-""".strip()
-
-    def _show_model_result_explanation_dialog(self):
-        summary = getattr(self, "_last_model_result_summary", None)
-        if not summary:
-            QMessageBox.information(self, "提示", "请先完成一次分析，再查看结果说明。")
+    def _export_analysis_report(self):
+        try:
+            payload = self._build_analysis_report_payload()
+        except Exception as exc:
+            QMessageBox.information(self, "导出分析报告", str(exc))
             return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("模型结果说明")
-        dialog.resize(760, 560)
-
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        browser = QTextBrowser(dialog)
-        browser.setReadOnly(True)
-        browser.setOpenExternalLinks(False)
-        browser.setStyleSheet(
-            "QTextBrowser {"
-            "background:#ffffff;"
-            "border:1px solid #dbe3ef;"
-            "border-radius:8px;"
-            "padding:8px;"
-            "font-size:12px;"
-            "}"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出分析报告",
+            "M-Line排程分析报告.xlsx",
+            "Excel (*.xlsx)",
         )
-        browser.setHtml(self._build_model_result_explanation_text(summary))
-        layout.addWidget(browser, 1)
-
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-        btn_close = QPushButton("关闭", dialog)
-        btn_close.clicked.connect(dialog.accept)
-        button_row.addWidget(btn_close)
-        layout.addLayout(button_row)
-
-        anchor = self._get_model_result_explanation_anchor_widget()
-        if anchor is not None:
-            global_pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
-            x = global_pos.x()
-            y = global_pos.y() + 8
-            screen = self.screen().availableGeometry() if self.screen() else None
-            parent_geo = self.frameGeometry()
-            if screen is not None:
-                if x + dialog.width() > screen.right() - 12:
-                    x = max(screen.left() + 12, screen.right() - dialog.width() - 12)
-                if y + dialog.height() > screen.bottom() - 12:
-                    x = max(screen.left() + 12, min(parent_geo.center().x() - dialog.width() // 2, screen.right() - dialog.width() - 12))
-                    y = max(screen.top() + 12, min(parent_geo.center().y() - dialog.height() // 2, screen.bottom() - dialog.height() - 12))
-            dialog.move(x, y)
-
-        dialog.exec()
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            write_analysis_report(path, payload)
+        except Exception as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+            return
+        self.status.showMessage(f"分析报告已导出：{path}", 6000)
+        QMessageBox.information(self, "导出完成", f"分析报告已导出：\n{path}")
 
     def _active_sim_rows(self):
         """返回当前仿真时间正在加工的排程段。"""

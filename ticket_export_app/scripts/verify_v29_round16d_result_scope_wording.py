@@ -73,8 +73,8 @@ def _verify_ui_integration() -> dict:
 
     summary = dict(window._last_model_result_summary or {})
     scope = dict(summary.get("result_scope_text", {}) or {})
-    explanation = window._build_model_result_explanation_text(summary)
     summary_html = window.lbl_vehicle_summary.text()
+    report_payload = window._build_analysis_report_payload()
 
     assert summary.get("is_ratio_mode") is False
     assert summary.get("analysis_time_minutes") == 0.0
@@ -82,12 +82,10 @@ def _verify_ui_integration() -> dict:
     assert scope.get("mode") == "quantity"
     assert scope.get("title") in summary_html
     assert scope.get("note") in summary_html
-    assert scope.get("vehicle_definition") in explanation
-    assert scope.get("vehicle_rule") in explanation
-    assert scope.get("vehicle_current") in explanation
-    assert "目标批次" in explanation
-    assert "分析时间60分钟" not in explanation
-    assert "分析时间3600" not in explanation
+    assert report_payload.get("scope_note") == scope.get("note")
+    assert "目标批次" in report_payload.get("scope_note", "")
+    assert "分析时间60分钟" not in report_payload.get("scope_note", "")
+    assert "分析时间3600" not in report_payload.get("scope_note", "")
 
     quantity_result = {
         "mode": scope.get("mode"),
@@ -107,8 +105,8 @@ def _verify_ui_integration() -> dict:
 
     ratio_summary = dict(window._last_model_result_summary or {})
     ratio_scope = dict(ratio_summary.get("result_scope_text", {}) or {})
-    ratio_explanation = window._build_model_result_explanation_text(ratio_summary)
     ratio_summary_html = window.lbl_vehicle_summary.text()
+    ratio_report_payload = window._build_analysis_report_payload()
 
     assert ratio_summary.get("is_ratio_mode") is True
     assert ratio_summary.get("analysis_time_minutes") == 1.0
@@ -116,10 +114,8 @@ def _verify_ui_integration() -> dict:
     assert ratio_scope.get("mode") == "ratio"
     assert ratio_scope.get("title") in ratio_summary_html
     assert ratio_scope.get("note") in ratio_summary_html
-    assert ratio_scope.get("vehicle_definition") in ratio_explanation
-    assert ratio_scope.get("vehicle_rule") in ratio_explanation
-    assert ratio_scope.get("vehicle_current") in ratio_explanation
-    assert "当前分析时间内暂无车辆完成下线" in ratio_explanation
+    assert ratio_report_payload.get("scope_note") == ratio_scope.get("note")
+    assert ratio_report_payload.get("output_count") == 0
     assert "目标批次终值" not in ratio_summary_html
 
     result = {

@@ -26,7 +26,7 @@ def _assert_invalidated(window: ExportTicketWindow) -> None:
     assert window._analysis_result_stale is True
     assert window.sim_time == 0.0
     assert not window.sim_timer.isActive()
-    assert not window.btn_model_result_explanation.isEnabled()
+    assert not window.btn_export_analysis_report.isEnabled()
     assert not window.btn_sim_play.isEnabled()
     assert not window.btn_sim_pause.isEnabled()
     assert not window.btn_sim_reset.isEnabled()
@@ -60,7 +60,7 @@ def main() -> int:
     assert refreshed_summary.get("total_actual_wait") == 510.0
     assert refreshed_summary.get("total_excess_wait") == 98.0
     assert window._analysis_result_stale is False
-    assert window.btn_model_result_explanation.isEnabled()
+    assert window.btn_export_analysis_report.isEnabled()
     assert window.btn_sim_play.isEnabled()
     assert window.btn_vehicle_log.isEnabled()
 

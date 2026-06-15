@@ -23,9 +23,7 @@ VIEWPORTS = ((1080, 700), (1366, 768), (1440, 900))
 
 def _assert_four_card_summary(window: ExportTicketWindow) -> None:
     html = window.lbl_vehicle_summary.text()
-    explanation = window._build_model_result_explanation_text(
-        dict(window._last_model_result_summary or {})
-    )
+    report_payload = window._build_analysis_report_payload()
 
     assert html.count("<td width='25%'") == 4
     assert "下线车辆" in html
@@ -38,12 +36,10 @@ def _assert_four_card_summary(window: ExportTicketWindow) -> None:
     assert "等待真因：" not in html
     assert "风险提示：" not in html
 
-    assert "2. 批次完成时刻" in explanation
-    assert "3. 整体节拍" in explanation
-    assert "4. 累计实际等待与累计节拍外等待" in explanation
-    assert "5. 主要关注" in explanation
-    assert "达标车辆" not in explanation
-    assert "达标率" not in explanation
+    assert report_payload.get("completion_label") == "批次总完成时刻"
+    assert report_payload.get("completion_time") == 1082.0
+    assert not hasattr(window, "btn_model_result_explanation")
+    assert window.btn_export_analysis_report.text() == "导出分析报告"
 
 
 def _capture_viewports(window: ExportTicketWindow) -> list[dict]:
@@ -54,11 +50,11 @@ def _capture_viewports(window: ExportTicketWindow) -> list[dict]:
         window.resize(width, height)
         window.show()
         app.processEvents()
-        window._position_model_result_explanation_button()
+        window._position_analysis_report_button()
         app.processEvents()
 
         label = window.lbl_vehicle_summary
-        button = window.btn_model_result_explanation
+        button = window.btn_export_analysis_report
         assert label.minimumHeight() == 160
         assert label.maximumHeight() == 205
         assert button.x() >= 0
@@ -91,13 +87,11 @@ def _assert_ratio_labels(window: ExportTicketWindow) -> dict:
     window.do_analyze()
 
     html = window.lbl_vehicle_summary.text()
-    explanation = window._build_model_result_explanation_text(
-        dict(window._last_model_result_summary or {})
-    )
+    report_payload = window._build_analysis_report_payload()
     assert html.count("<td width='25%'") == 4
     assert "窗口内下线" in html
     assert "窗口末台下线" in html
-    assert "窗口末台下线" in explanation
+    assert report_payload.get("completion_label") == "窗口末台下线"
     assert "批次完成时刻" not in html
     assert "达标车辆" not in html
     assert "达标率" not in html

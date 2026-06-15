@@ -32,7 +32,7 @@ def main() -> int:
 
     summary = dict(window._last_model_result_summary or {})
     core_summary = dict((window.last_analysis or {}).get("summary", {}) or {})
-    explanation = window._build_model_result_explanation_text(summary)
+    scope_text = dict(summary.get("result_scope_text", {}) or {})
 
     assert core_summary.get("actual_output_count_in_window") == 0
     assert summary.get("output_count") == 0
@@ -42,8 +42,8 @@ def main() -> int:
     assert summary.get("first_out") is None
     assert summary.get("last_out") is None
     assert summary.get("last_output_car_no") is None
-    assert "当前分析时间内暂无车辆完成下线" in explanation
-    assert "第52台车辆" not in explanation
+    assert "当前分析时间内暂无车辆完成下线" in scope_text.get("vehicle_current", "")
+    assert "Car#52" not in scope_text.get("vehicle_current", "")
 
     result = {
         "analysis_time_seconds": summary.get("analysis_time_seconds"),
