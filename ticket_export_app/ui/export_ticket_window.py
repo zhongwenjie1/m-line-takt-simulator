@@ -4101,6 +4101,8 @@ class ExportTicketWindow(QMainWindow):
                 return [("1号线", True), ("2号线", False)]
             if scope == "2号线":
                 return [("1号线", False), ("2号线", True)]
+            if scope == "双线共用":
+                return [("shared", True)]
             return [("1号线", True), ("2号线", True)]
 
         def _line_key(line_no):
@@ -4114,7 +4116,7 @@ class ExportTicketWindow(QMainWindow):
             for idx, station_info in enumerate(station_defs):
                 x = first_station_x + idx * (station_w + station_gap)
                 slot_x = x + max(0, (station_w - slot_w) / 2)
-                layout[station_info["name"]] = {
+                info = {
                     "x": x,
                     "title_x": x + 12,
                     "slot_x": slot_x,
@@ -4131,6 +4133,14 @@ class ExportTicketWindow(QMainWindow):
                         "h": slot_h,
                     },
                 }
+                if _station_device_mode(station_info) == "shared":
+                    info["shared"] = {
+                        "x": slot_x,
+                        "y": line1_y - slot_h / 2,
+                        "w": slot_w,
+                        "h": line2_y - line1_y + slot_h,
+                    }
+                layout[station_info["name"]] = info
             return layout
 
         def _draw_track_headers():
@@ -4285,7 +4295,14 @@ class ExportTicketWindow(QMainWindow):
                 or ""
             ).upper()
             car_no = str(self._sim_row_value(row, "car", "car_no", "car_id", default="") or "")
-            return f"{car_type or '车'}-{car_no or '?'}"
+            label = f"{car_type or '车'}-{car_no or '?'}"
+            station_name = self._sim_row_station(row)
+            if station_modes.get(station_name) == "shared":
+                line_no = str(self._sim_row_line_no(row) or "").strip()
+                if "2" in line_no:
+                    return f"{label}\n→2号线"
+                return f"{label}\n→1号线"
+            return label
 
         def _slot_status_text(status, seconds_text):
             if status == "移动":
@@ -4412,20 +4429,32 @@ class ExportTicketWindow(QMainWindow):
         for station_info in station_defs:
             name = station_info["name"]
             line_scope = station_info.get("line_scope")
-            station_modes[name] = _station_device_mode(station_info)
+            mode = _station_device_mode(station_info)
+            station_modes[name] = mode
             layout_info = station_layout[name]
             _draw_station_zone(station_info, layout_info)
             slots = _line_slots(line_scope)
             slot_rects[name] = {}
             for line_label, enabled in slots:
-                slot = dict(layout_info[line_label])
+                if line_label == "shared":
+                    slot = dict(layout_info.get("shared", layout_info["1号线"]))
+                else:
+                    slot = dict(layout_info[line_label])
                 slot["enabled"] = enabled
                 _draw_station_track_slot(slot, enabled)
                 slot_rects[name][line_label] = slot
 
         def _slot_for_row(row):
-            station_slots = slot_rects.get(self._sim_row_station(row))
+            station_name = self._sim_row_station(row)
+            station_slots = slot_rects.get(station_name)
             if not station_slots:
+                return None, ""
+            is_shared = station_modes.get(station_name) == "shared"
+            if is_shared:
+                # 共用设备只有一个 "shared" 槽
+                shared = station_slots.get("shared")
+                if shared and shared.get("enabled"):
+                    return shared, "shared"
                 return None, ""
             slot_line = _line_key(self._sim_row_line_no(row))
             slot = station_slots.get(slot_line)
@@ -4557,7 +4586,7 @@ class ExportTicketWindow(QMainWindow):
                 continue
             start = self._sim_row_start(row)
             svc_finish = self._sim_row_service_finish(row)
-            if start <= current < svc_finish:
+            if start - 1e-9 <= current < svc_finish - 1e-9:
                 remain = max(0.0, svc_finish - current)
                 vehicle_blocks.append({
                     "station": self._sim_row_station(row),
