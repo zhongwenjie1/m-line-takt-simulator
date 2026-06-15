@@ -344,6 +344,10 @@ class ExportTicketWindow(QMainWindow):
         result_nav_row.addStretch()
         self.btn_analyze = QPushButton("分析当前排程", self.page_multi_result)
         result_nav_row.addWidget(self.btn_analyze)
+        self.btn_cancel_analysis = QPushButton("取消分析", self.page_multi_result)
+        self.btn_cancel_analysis.setFixedWidth(72)
+        self.btn_cancel_analysis.setVisible(False)
+        result_nav_row.addWidget(self.btn_cancel_analysis)
         result_layout.addLayout(result_nav_row)
 
         # 以下控件仅作为旧逻辑兼容容器保留，不再占用分析页版面空间。
@@ -1129,6 +1133,7 @@ class ExportTicketWindow(QMainWindow):
     def do_analyze(self):
         self.btn_analyze.setEnabled(False)
         self.btn_analyze.setText("正在分析…")
+        self.btn_cancel_analysis.setVisible(True)
         self.status.showMessage("正在分析当前排程，请稍候…")
 
         def _run():
@@ -1144,6 +1149,7 @@ class ExportTicketWindow(QMainWindow):
 
         worker = Worker(_run)
         self._analysis_request_in_flight = getattr(self, "_analysis_request_in_flight", 0) + 1
+        self._analysis_worker = worker
         request_id = self._analysis_request_in_flight
 
         def _on_result(result):
@@ -1166,16 +1172,37 @@ class ExportTicketWindow(QMainWindow):
             self._show_analysis_result(analysis)
             self._update_realtime_model_result()
             self.status.showMessage("排程分析完成", 6000)
-            self.btn_analyze.setEnabled(True)
-            self.btn_analyze.setText("分析当前排程")
+            self._restore_analyze_button()
 
         def _on_error(error_text):
             if getattr(self, "_analysis_request_in_flight", 0) != request_id:
                 return
             print(error_text)
+            self._restore_analyze_button()
+            QMessageBox.warning(self, "分析失败", str(error_text).splitlines()[-1] if error_text else "未知错误")
+
+        def _on_finished():
+            if getattr(self, "_analysis_request_in_flight", 0) == request_id:
+                self._analysis_request_in_flight = 0
+                self._analysis_worker = None
+
+        def _restore_analyze_button():
             self.btn_analyze.setEnabled(True)
             self.btn_analyze.setText("分析当前排程")
-            QMessageBox.warning(self, "分析失败", str(error_text).splitlines()[-1] if error_text else "未知错误")
+            self.btn_cancel_analysis.setVisible(False)
+
+        def _cancel_analysis():
+            self._analysis_request_in_flight = 0
+            if getattr(self, "_analysis_worker", None) is not None:
+                self._analysis_worker.signals.result.disconnect()
+                self._analysis_worker.signals.error.disconnect()
+                self._analysis_worker.signals.finished.disconnect()
+                self._analysis_worker = None
+            self.status.showMessage("分析已取消", 4000)
+            self._restore_analyze_button()
+
+        self.btn_cancel_analysis.clicked.disconnect()
+        self.btn_cancel_analysis.clicked.connect(_cancel_analysis)
 
         def _on_finished():
             if getattr(self, "_analysis_request_in_flight", 0) == request_id:
