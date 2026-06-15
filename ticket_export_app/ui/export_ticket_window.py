@@ -32,6 +32,7 @@ from core.analysis import (
     compute_car_capacity_results,
 )
 from core.input_parser import parse_multi_project_inputs as core_parse_multi_project_inputs
+from utils.result_scope_text import build_result_scope_text
 
 
 class ExportTicketWindow(QMainWindow):
@@ -3680,25 +3681,26 @@ class ExportTicketWindow(QMainWindow):
                     next_output_vehicle = item
                     break
 
-        analysis_time_seconds = summary.get("analysis_time_seconds")
-        try:
-            analysis_time_seconds = float(analysis_time_seconds or 0.0)
-        except Exception:
-            analysis_time_seconds = 0.0
-        analysis_time_minutes = 0.0
-        if analysis_time_seconds > 0:
-            analysis_time_minutes = analysis_time_seconds / 60.0
-        elif hasattr(self, "spn_total_cars"):
+        analysis_time_seconds = 0.0
+        if is_ratio:
             try:
-                analysis_time_minutes = float(self.spn_total_cars.value() or 0.0)
-                analysis_time_seconds = analysis_time_minutes * 60.0
+                analysis_time_seconds = float(summary.get("analysis_time_seconds", 0.0) or 0.0)
             except Exception:
-                analysis_time_minutes = 0.0
                 analysis_time_seconds = 0.0
 
+        result_scope_text = build_result_scope_text(
+            is_ratio_mode=is_ratio,
+            output_count=denominator_vehicle_count,
+            analysis_time_seconds=analysis_time_seconds,
+            last_output_car_no=last_output_vehicle.get("car_key") if last_output_vehicle else None,
+            last_output_car_out=last_output_vehicle.get("car_out") if last_output_vehicle else None,
+        )
+
         self._last_model_result_summary = {
-            "analysis_time_minutes": analysis_time_minutes,
-            "analysis_time_seconds": analysis_time_seconds,
+            "is_ratio_mode": is_ratio,
+            "analysis_time_minutes": result_scope_text["analysis_time_minutes"],
+            "analysis_time_seconds": result_scope_text["analysis_time_seconds"],
+            "result_scope_text": result_scope_text,
             "output_count": output_vehicle_count,
             "qualified_count": qualified_vehicle_count,
             "qualified_rate": qualified_rate,
@@ -3728,12 +3730,8 @@ class ExportTicketWindow(QMainWindow):
             _metric_card("整体节拍", f"{overall_takt_text}/{target_takt_text}"),
             _metric_card("累计节拍外等待", f"{excess_wait_text}s"),
         ]
-        if is_ratio:
-            result_scope_title = f"模型结果（分析窗口终值：{analysis_minutes:g}分钟）"
-            result_scope_note = f"统计范围：前{analysis_minutes:g}分钟终值"
-        else:
-            result_scope_title = f"模型结果（目标批次终值：{denominator_vehicle_count}台）"
-            result_scope_note = f"统计范围：目标批次{denominator_vehicle_count}台终值"
+        result_scope_title = result_scope_text["title"]
+        result_scope_note = result_scope_text["note"]
 
         right_html = (
             f"<div style='font-size:13px;font-weight:700;color:#334155;margin-bottom:4px;padding-right:92px;'>{result_scope_title}</div>"
@@ -3795,15 +3793,6 @@ class ExportTicketWindow(QMainWindow):
                 return default
             return self._fmt_analysis_num(value)
 
-        def _fmt_minutes(value):
-            try:
-                minutes = float(value or 0.0)
-            except Exception:
-                return "0"
-            if abs(minutes - round(minutes)) < 1e-9:
-                return str(int(round(minutes)))
-            return f"{minutes:.1f}"
-
         output_count = int(summary.get("output_count", 0) or 0)
         qualified_count = int(summary.get("qualified_count", 0) or 0)
         qualified_rate_percent = summary.get("qualified_rate_percent")
@@ -3816,19 +3805,15 @@ class ExportTicketWindow(QMainWindow):
         total_actual_wait = summary.get("total_actual_wait", summary.get("total_block_wait", 0.0))
         total_excess_wait = summary.get("total_excess_wait", 0.0)
         risk_text = str(summary.get("risk_text", "") or "暂无明显风险")
-        analysis_time_minutes = summary.get("analysis_time_minutes", 0.0)
-        analysis_time_seconds = summary.get("analysis_time_seconds", 0.0)
-
-        if output_count <= 0:
-            output_calc = "当前分析时间内暂无车辆完成下线，所以当前下线车辆为 0台。"
-        elif last_output_car_no is not None and last_output_car_out is not None and analysis_time_seconds:
-            output_calc = (
-                f"第{escape(str(last_output_car_no))}台车辆下线完成时间 {_fmt_num(last_output_car_out)}s ≤ "
-                f"分析时间 {_fmt_minutes(analysis_time_minutes)}分钟（{_fmt_num(analysis_time_seconds)}s），"
-                f"所以当前下线车辆为 {output_count}台。"
+        scope_text = summary.get("result_scope_text")
+        if not isinstance(scope_text, dict):
+            scope_text = build_result_scope_text(
+                is_ratio_mode=bool(summary.get("is_ratio_mode", False)),
+                output_count=output_count,
+                analysis_time_seconds=summary.get("analysis_time_seconds", 0.0),
+                last_output_car_no=last_output_car_no,
+                last_output_car_out=last_output_car_out,
             )
-        else:
-            output_calc = f"当前分析时间范围内共统计到 {output_count}台已下线车辆。"
 
         if output_count <= 0:
             qualified_calc = "当前暂无下线车辆，因此达标车辆暂显示为 0/0。"
@@ -3866,9 +3851,9 @@ class ExportTicketWindow(QMainWindow):
   </div>
 
   <div style="margin-top:8px;"><b>1. 下线车辆</b></div>
-  <div>表示：在设定分析时间内，已经完成最后一道工序并下线的车辆数量。</div>
-  <div>计算口径：下线完成时间 ≤ 分析时间。</div>
-  <div>本次计算：{output_calc}</div>
+  <div>{escape(scope_text["vehicle_definition"])}</div>
+  <div>{escape(scope_text["vehicle_rule"])}</div>
+  <div>{escape(scope_text["vehicle_current"])}</div>
 
   <div style="margin-top:8px;"><b>2. 达标车辆</b></div>
   <div>表示：下线车辆中，经过的所有有效工位，其工位能力节拍均不超过目标节拍的车辆数量。</div>
@@ -3882,7 +3867,7 @@ class ExportTicketWindow(QMainWindow):
   <div>本次计算：{rate_calc}</div>
 
   <div style="margin-top:8px;"><b>4. 整体节拍</b></div>
-  <div>表示：已下线车辆在当前分析时间内的整体下线节奏。</div>
+  <div>{escape(scope_text["overall_definition"])}</div>
   <div>计算口径：整体节拍 =（最后一台下线完成时间 - 第一台下线完成时间）÷（下线车辆数 - 1），即全部相邻下线间隔的平均值。</div>
   <div>本次计算：{overall_calc}</div>
 
