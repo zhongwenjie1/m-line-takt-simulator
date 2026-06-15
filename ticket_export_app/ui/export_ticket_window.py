@@ -3253,9 +3253,6 @@ class ExportTicketWindow(QMainWindow):
         else:
             target_scope_vehicles = list(all_vehicles)
         denominator_vehicle_count = len(target_scope_vehicles)
-        if denominator_vehicle_count <= 0:
-            target_scope_vehicles = list(all_vehicles)
-            denominator_vehicle_count = len(target_scope_vehicles)
         output_vehicle_count = denominator_vehicle_count
 
         def _recent_out_interval_takt(vehicles):
