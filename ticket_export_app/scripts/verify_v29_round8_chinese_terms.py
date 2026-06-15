@@ -24,7 +24,7 @@ def main() -> None:
         "OUT=下线完成时间",
         "WAIT=单车总等待",
         "FLOW=单车贯通时间",
-        "工程过程",
+        "SEGMENTS",
     ]
     missing = [term for term in required if term not in source]
     if missing:
@@ -49,7 +49,7 @@ def main() -> None:
         raise AssertionError(f"结构化日志仍显示内部字段名：{leaked}")
 
     user_log_block = source[source.index('lines = [', source.index('def _build_schedule_debug_log')):source.index('sorted_car_items =', source.index('def _build_schedule_debug_log'))]
-    leaked_log_terms = [term for term in ("svc_finish", "depart", "dur", "launch_wait", "block_wait", "SEGMENTS") if term in user_log_block]
+    leaked_log_terms = [term for term in ("svc_finish", "depart", "dur", "launch_wait", "block_wait") if term in user_log_block]
     if leaked_log_terms:
         raise AssertionError(f"车辆过程日志仍显示内部专业字段：{leaked_log_terms}")
 

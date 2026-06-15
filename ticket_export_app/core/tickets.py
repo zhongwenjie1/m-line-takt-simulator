@@ -747,7 +747,7 @@ def _schedule_arrival_fcfs(steps: List[Dict[str, Any]],
     return rows, max_time
 
 
-# ---------------- 调度（含 Zone + gate_buffer） ---------------- #
+# ---------------- 排程入口与历史兼容路径 ---------------- #
 def schedule(step_defs: List[Dict[str, Any]],
              cars: int,
              vehicle_counts: Dict[str, int] | None = None,
@@ -756,7 +756,70 @@ def schedule(step_defs: List[Dict[str, Any]],
              ratio_pattern: Optional[Dict[str, int]] = None,
              launch_takt: Optional[float] = None,
              vehicle_sequence: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], float]:
+    """正式排程入口。
+
+    当前M-Line UI生成的岗位定义不含Zone/gate字段，因此直接进入
+    按实际到达顺序服务的事件排程。只有历史外部输入显式传入
+    zone_id / gate_zone_id 时，才进入保留的兼容路径。
     """
+    steps, zones, gate_buffers = _normalize_defs(step_defs)
+    if zones or gate_buffers:
+        return _schedule_legacy_zone_gate(
+            step_defs=step_defs,
+            cars=cars,
+            vehicle_counts=vehicle_counts,
+            sequence_mode=sequence_mode,
+            max_consecutive=max_consecutive,
+            ratio_pattern=ratio_pattern,
+            launch_takt=launch_takt,
+            vehicle_sequence=vehicle_sequence,
+        )
+
+    if vehicle_sequence is not None:
+        vehicle_seq = [str(vehicle_type).strip().upper() for vehicle_type in vehicle_sequence]
+        if not vehicle_seq or any(vehicle_type not in ("A", "B", "C") for vehicle_type in vehicle_seq):
+            raise ValueError("冻结排列包含无效车型，必须重新冻结。")
+        if vehicle_counts and sequence_mode != "ratio":
+            expected = {
+                vehicle_type: max(0, int(vehicle_counts.get(vehicle_type, 0) or 0))
+                for vehicle_type in ("A", "B", "C")
+            }
+            actual = {vehicle_type: vehicle_seq.count(vehicle_type) for vehicle_type in ("A", "B", "C")}
+            if actual != expected:
+                raise ValueError("冻结排列与当前A/B/C数量不一致，必须重新冻结。")
+    else:
+        vehicle_seq = build_vehicle_sequence(
+            cars,
+            vehicle_counts,
+            sequence_mode,
+            max_consecutive,
+            ratio_pattern,
+        )
+
+    try:
+        launch_takt_value = float(launch_takt or 0.0)
+    except Exception:
+        launch_takt_value = 0.0
+    if launch_takt_value < 0:
+        launch_takt_value = 0.0
+
+    return _schedule_arrival_fcfs(steps, vehicle_seq, launch_takt_value)
+
+
+def _schedule_legacy_zone_gate(step_defs: List[Dict[str, Any]],
+                               cars: int,
+                               vehicle_counts: Dict[str, int] | None = None,
+                               sequence_mode: str = "grouped",
+                               max_consecutive: int = 10,
+                               ratio_pattern: Optional[Dict[str, int]] = None,
+                               launch_takt: Optional[float] = None,
+                               vehicle_sequence: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], float]:
+    """
+    历史Zone/gate兼容排程。当前M-Line UI不会生成这些字段。
+
+    本函数仅为兼容旧的外部输入保留，不属于v2.9正式业务路径。
+    修改正式排程时不应同时改动此兼容实现。
+
     返回：
       rows: 每车-每步记录：
         {car, step_seq, step_display, group, dur, start, svc_finish, depart, block_wait}
@@ -823,10 +886,8 @@ def schedule(step_defs: List[Dict[str, Any]],
     if launch_takt_value < 0:
         launch_takt_value = 0.0
 
-    # Normal M-Line models have no legacy zone/gate constraints. Use event-based
-    # scheduling so shared and single resources can serve actual arrivals first.
     if not zones and not gate_buffers:
-        return _schedule_arrival_fcfs(steps, vehicle_seq, launch_takt_value)
+        raise ValueError("历史Zone/gate兼容路径缺少zone_id或gate_zone_id。")
  
     def _initial_resource_slots(st: Dict[str, Any]) -> List[Tuple[float, str]]:
         """根据所属线别生成初始资源槽：(释放时间, 线别)。"""
