@@ -1,0 +1,51 @@
+{
+  "baseline_version": "v2.9-round16c",
+  "waiting_scope": {
+    "authoritative": "截止69000s时已经真实发生的等待，包含当时仍在等待中的已发生部分",
+    "not_authoritative_finished_segments_only": 198904.5,
+    "not_authoritative_finished_vehicles_only": 197230.5
+  },
+  "quantity": {
+    "summary": {
+      "generated": 1148,
+      "finished_full_batch": 1148,
+      "first_out": 1423.5,
+      "last_out_full_batch": 76152.5,
+      "overall_takt_full_batch": 65.15170008718395,
+      "total_actual_wait_full_batch": 239975.5,
+      "total_bottleneck_wait_full_batch": 5430.0,
+      "same_resource_processing_overlap": 0,
+      "station_slot_overlap": 0,
+      "shared_resource_arrival_order_violation": 0,
+      "first_station_launch_skip": 0
+    },
+    "rows_sha256": "1e586079387868fa5fc2bb0770a65672cf2080985b20b04b3938129ede60f2fb",
+    "rows_lock_passed": true,
+    "summary_sha256": "55c788272c900139d246963353dc34e42d4f318d8f78da54d37f06f3091ca2f8",
+    "summary_lock_passed": true
+  },
+  "ratio": {
+    "summary": {
+      "generated": 1240,
+      "theoretical_launch_count": 1190,
+      "simulation_buffer_count": 50,
+      "within_window": 1024,
+      "first_out_in_window": 861.0,
+      "last_out_in_window": 68996.5,
+      "overall_takt_in_window": 66.60361681329424,
+      "target_batch_time": 69823.0,
+      "target_batch_actual_finish_in_window": 80010.5,
+      "max_finish_full_batch": 83308.0,
+      "total_actual_wait_at_cutoff": 199015.5,
+      "total_bottleneck_wait_at_cutoff": 3126.0,
+      "same_resource_processing_overlap": 0,
+      "station_slot_overlap": 0,
+      "shared_resource_arrival_order_violation": 0,
+      "first_station_launch_skip": 0
+    },
+    "rows_sha256": "4e8b24f9fd609f4c36481bff96d3ad0a4844b7227efde24180d4164a069010d8",
+    "rows_lock_passed": true,
+    "summary_sha256": "c9dcd80156728f7d653d863bf25a0621c91fff226b7c823e7bef31c10d49b197",
+    "summary_lock_passed": true
+  }
+}

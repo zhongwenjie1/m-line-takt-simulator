@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Generate and verify the v2.9 real-data regression baseline.
+"""Historical investigation snapshot for the original v2.9 real-data results.
 
-This script is intentionally read-only. It reconstructs the two investigation
-scenarios with the current scheduler and prints deterministic JSON to stdout.
+This module remains available because later verification scripts reuse its
+station definitions and inspection helpers. Its embedded expected values are
+from an earlier scheduler stage and are no longer the current pass/fail gate.
+
+Use verify_v29_round16c_authoritative_baseline.py as the authoritative current
+regression entry point.
 """
 
 from __future__ import annotations
