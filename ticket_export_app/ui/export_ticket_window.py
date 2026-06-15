@@ -372,8 +372,8 @@ class ExportTicketWindow(QMainWindow):
         self.lbl_vehicle_summary.setTextFormat(Qt.RichText)
         self.lbl_vehicle_summary.setTextInteractionFlags(Qt.TextBrowserInteraction)
         self.lbl_vehicle_summary.setOpenExternalLinks(False)
-        self.lbl_vehicle_summary.setMinimumHeight(175)
-        self.lbl_vehicle_summary.setMaximumHeight(225)
+        self.lbl_vehicle_summary.setMinimumHeight(160)
+        self.lbl_vehicle_summary.setMaximumHeight(205)
         self.lbl_vehicle_summary.setStyleSheet(
             "background: #f7f9fc;"
             "border: 1px dashed #cbd5e1;"
@@ -3554,11 +3554,11 @@ class ExportTicketWindow(QMainWindow):
 
         def _metric_card(title, value, value_color="#0f172a"):
             return (
-                "<td width='20%' style='"
-                "width:20%;"
+                "<td width='25%' style='"
+                "width:25%;"
                 "border:1px solid #dbe3ef;"
                 "background:#ffffff;"
-                "padding:8px 9px;"
+                "padding:7px 9px;"
                 "vertical-align:top;"
                 "'>"
                 f"<div style='font-size:10px;color:#64748b;'>{title}</div>"
@@ -3621,7 +3621,6 @@ class ExportTicketWindow(QMainWindow):
         qualified_vehicle_count = int(realtime.get("qualified_vehicle_count", 0) or 0)
         denominator_vehicle_count = int(realtime.get("denominator_vehicle_count", output_vehicle_count) or 0)
         qualified_rate = realtime.get("qualified_rate")
-        qualified_rate_text = "—" if qualified_rate is None else f"{float(qualified_rate) * 100:.1f}%"
         target_takt_value = realtime.get("target_takt", summary.get("target_takt", 0.0))
         target_takt_text = self._fmt_analysis_num(target_takt_value)
         overall_takt = realtime.get("overall_takt")
@@ -3631,6 +3630,7 @@ class ExportTicketWindow(QMainWindow):
         actual_wait_text = self._fmt_analysis_num(actual_wait)
         excess_wait_text = self._fmt_analysis_num(excess_wait)
         risk_parts = []
+        capacity_summary_text = ""
         capacity_over_stations = realtime.get("capacity_over_stations", []) or []
         if capacity_over_stations:
             process_parts = []
@@ -3641,27 +3641,18 @@ class ExportTicketWindow(QMainWindow):
                 type_text = "/".join(types)
                 over_text = self._fmt_analysis_num(item.get("max_over", 0.0))
                 process_parts.append(f"{station} {type_text} {over_text}s/台".strip())
-            risk_parts.append(f"超节拍工程：{'；'.join(process_parts)}")
+            capacity_summary_text = "；".join(process_parts)
+            risk_parts.append(f"超节拍工程：{capacity_summary_text}")
         excess_station_items = realtime.get("excess_wait_by_station", []) or []
+        excess_station_text = ""
         if excess_station_items:
-            station_text = "；".join(
+            excess_station_text = "；".join(
                 f"{item.get('station', '未知工程')} {self._fmt_analysis_num(item.get('wait_time', 0.0))}s"
                 for item in excess_station_items[:3]
             )
-            risk_parts.insert(0, f"节拍外等待发生工程：{station_text}")
+            risk_parts.insert(0, f"节拍外等待发生工程：{excess_station_text}")
         risk_hint_text = "｜".join(risk_parts) if risk_parts else "暂无明显风险"
-
         cause_chain_items = realtime.get("cause_chain_summary", []) or []
-        cause_chain_parts = []
-        for item in cause_chain_items[:3]:
-            cause_chain_parts.append(
-                f"{item.get('terminal_cause', '原因链不完整')} → "
-                f"{item.get('direct_blocking_station', '未知工程')}无法放行 → "
-                f"{item.get('waiting_station', '未知工程')}发生等待｜"
-                f"{int(item.get('event_count', 0) or 0)}次｜"
-                f"{self._fmt_analysis_num(item.get('wait_time', 0.0))}s"
-            )
-        cause_chain_text = "；".join(cause_chain_parts) if cause_chain_parts else "暂无节拍外等待真因"
 
         target_scope_vehicles = list(realtime.get("target_scope_vehicles", []) or [])
         all_vehicles = list(realtime.get("all_vehicles", []) or [])
@@ -3695,6 +3686,10 @@ class ExportTicketWindow(QMainWindow):
             last_output_car_no=last_output_vehicle.get("car_key") if last_output_vehicle else None,
             last_output_car_out=last_output_vehicle.get("car_out") if last_output_vehicle else None,
         )
+        completion_time = last_output_vehicle.get("car_out") if last_output_vehicle else None
+        completion_time_text = "—" if completion_time is None else f"{self._fmt_analysis_num(completion_time)}s"
+        completion_card_title = "窗口末台下线" if is_ratio else "批次完成时刻"
+        output_card_title = "窗口内下线" if is_ratio else "下线车辆"
 
         self._last_model_result_summary = {
             "is_ratio_mode": is_ratio,
@@ -3710,6 +3705,8 @@ class ExportTicketWindow(QMainWindow):
             "last_out": target_scope_vehicles[-1].get("car_out") if target_scope_vehicles else None,
             "last_output_car_no": last_output_vehicle.get("car_key") if last_output_vehicle else None,
             "last_output_car_out": last_output_vehicle.get("car_out") if last_output_vehicle else None,
+            "completion_time": completion_time,
+            "completion_card_title": completion_card_title,
             "next_car_no": next_output_vehicle.get("car_key") if next_output_vehicle else None,
             "next_car_out": next_output_vehicle.get("car_out") if next_output_vehicle else None,
             "overall_takt": overall_takt,
@@ -3724,9 +3721,8 @@ class ExportTicketWindow(QMainWindow):
         }
 
         model_cards = [
-            _metric_card("下线车辆", f"{output_vehicle_count}台"),
-            _metric_card("达标车辆", f"{qualified_vehicle_count}/{denominator_vehicle_count}"),
-            _metric_card("达标率", qualified_rate_text),
+            _metric_card(output_card_title, f"{output_vehicle_count}台"),
+            _metric_card(completion_card_title, completion_time_text),
             _metric_card("整体节拍", f"{overall_takt_text}/{target_takt_text}"),
             _metric_card("累计节拍外等待", f"{excess_wait_text}s"),
         ]
@@ -3744,13 +3740,28 @@ class ExportTicketWindow(QMainWindow):
             f"<div style='font-size:11px;color:#334155;line-height:1.3;margin-top:2px;margin-bottom:0;'>"
             f"{result_scope_note}｜累计实际等待 {actual_wait_text}s"
             "</div>"
-            f"<div style='font-size:12px;color:#334155;line-height:1.4;margin-top:3px;'>"
-            f"<span style='font-weight:700;color:#0f172a;'>风险提示：</span>{risk_hint_text}"
-            "</div>"
-            f"<div style='font-size:11px;color:#475569;line-height:1.35;margin-top:3px;'>"
-            f"<span style='font-weight:700;color:#0f172a;'>等待真因：</span>{cause_chain_text} "
-            "<a href='wait-cause-details' style='color:#2563eb;text-decoration:none;'>查看车辆明细</a>"
-            "</div>"
+            + (
+                f"<div style='font-size:11px;color:#475569;line-height:1.35;margin-top:3px;'>"
+                f"<span style='font-weight:700;color:#0f172a;'>主要等待位置：</span>{excess_station_text}"
+                "</div>"
+                if excess_station_text
+                else ""
+            )
+            + (
+                f"<div style='font-size:11px;color:#475569;line-height:1.35;margin-top:3px;'>"
+                f"<span style='font-weight:700;color:#0f172a;'>超节拍工程：</span>{capacity_summary_text}"
+                "</div>"
+                if capacity_summary_text
+                else ""
+            )
+            + (
+                "<div style='font-size:11px;color:#475569;line-height:1.35;margin-top:3px;'>"
+                "<span style='font-weight:700;color:#0f172a;'>主要关注：</span>"
+                "暂无明显节拍外等待或超节拍工程"
+                "</div>"
+                if not excess_station_text and not capacity_summary_text
+                else ""
+            )
         )
         
         html = (
@@ -3794,8 +3805,6 @@ class ExportTicketWindow(QMainWindow):
             return self._fmt_analysis_num(value)
 
         output_count = int(summary.get("output_count", 0) or 0)
-        qualified_count = int(summary.get("qualified_count", 0) or 0)
-        qualified_rate_percent = summary.get("qualified_rate_percent")
         target_takt = summary.get("target_takt", 0.0)
         first_out = summary.get("first_out")
         last_out = summary.get("last_out")
@@ -3805,6 +3814,8 @@ class ExportTicketWindow(QMainWindow):
         total_actual_wait = summary.get("total_actual_wait", summary.get("total_block_wait", 0.0))
         total_excess_wait = summary.get("total_excess_wait", 0.0)
         risk_text = str(summary.get("risk_text", "") or "暂无明显风险")
+        completion_time = summary.get("completion_time", last_output_car_out)
+        completion_card_title = str(summary.get("completion_card_title", "完成时刻") or "完成时刻")
         scope_text = summary.get("result_scope_text")
         if not isinstance(scope_text, dict):
             scope_text = build_result_scope_text(
@@ -3815,18 +3826,10 @@ class ExportTicketWindow(QMainWindow):
                 last_output_car_out=last_output_car_out,
             )
 
-        if output_count <= 0:
-            qualified_calc = "当前暂无下线车辆，因此达标车辆暂显示为 0/0。"
+        if completion_time is None:
+            completion_calc = f"当前没有可用于显示{completion_card_title}的下线车辆，暂显示为 -。"
         else:
-            qualified_calc = (
-                f"本次下线车辆 {output_count}台，其中 {qualified_count}台满足工位能力节拍要求，"
-                f"所以达标车辆为 {qualified_count}/{output_count}。"
-            )
-
-        if output_count <= 0 or qualified_rate_percent is None:
-            rate_calc = "当前暂无有效下线车辆，因此达标率暂显示为 —。"
-        else:
-            rate_calc = f"{qualified_count} ÷ {output_count} × 100% = {qualified_rate_percent:.1f}%。"
+            completion_calc = f"当前{completion_card_title}为 {_fmt_num(completion_time)}s。"
 
         if output_count < 2 or first_out is None or last_out is None or overall_takt is None:
             overall_calc = "当前下线车辆不足 2台，无法计算相邻下线间隔平均值，所以整体节拍暂显示为 -。"
@@ -3855,30 +3858,24 @@ class ExportTicketWindow(QMainWindow):
   <div>{escape(scope_text["vehicle_rule"])}</div>
   <div>{escape(scope_text["vehicle_current"])}</div>
 
-  <div style="margin-top:8px;"><b>2. 达标车辆</b></div>
-  <div>表示：下线车辆中，经过的所有有效工位，其工位能力节拍均不超过目标节拍的车辆数量。</div>
-  <div>计算口径：工位能力节拍 = 当前车型该工位工时 ÷ 该工位有效设备数。</div>
-  <div>补充说明：工时为 0 的经过节点不参与工位能力超节拍判断。</div>
-  <div>本次计算：{qualified_calc}</div>
+  <div style="margin-top:8px;"><b>2. {escape(completion_card_title)}</b></div>
+  <div>表示：当前统计范围内最后完成下线车辆的实际下线时间。</div>
+  <div>计算口径：取当前统计范围内全部车辆下线时间的最大值。</div>
+  <div>本次计算：{completion_calc}</div>
 
-  <div style="margin-top:8px;"><b>3. 达标率</b></div>
-  <div>表示：达标车辆在下线车辆中的占比。</div>
-  <div>计算口径：达标率 = 达标车辆 ÷ 下线车辆 × 100%。</div>
-  <div>本次计算：{rate_calc}</div>
-
-  <div style="margin-top:8px;"><b>4. 整体节拍</b></div>
+  <div style="margin-top:8px;"><b>3. 整体节拍</b></div>
   <div>{escape(scope_text["overall_definition"])}</div>
   <div>计算口径：整体节拍 =（最后一台下线完成时间 - 第一台下线完成时间）÷（下线车辆数 - 1），即全部相邻下线间隔的平均值。</div>
   <div>本次计算：{overall_calc}</div>
 
-  <div style="margin-top:8px;"><b>5. 累计实际等待与累计节拍外等待</b></div>
+  <div style="margin-top:8px;"><b>4. 累计实际等待与累计节拍外等待</b></div>
   <div>表示：累计实际等待是车辆加工完成后真实停留的总时间；累计节拍外等待是其中超过当前工程可接纳上限、无法在目标节拍内吸收的部分。</div>
   <div>计算口径：可接纳上限 = 有效设备数 × 目标节拍；节拍外等待 = max（0，实际等待 - 可接纳上限）。</div>
   <div>本次计算：{wait_calc}</div>
 
-  <div style="margin-top:8px;"><b>6. 风险提示</b></div>
-  <div>表示：提示节拍外等待发生在哪里，以及哪些车型在具体工程的加工工时超过工程能力上限。</div>
-  <div>计算口径：等待发生工程与超节拍工程分开显示；整体节拍已在结果卡片中显示，不在此重复。</div>
+  <div style="margin-top:8px;"><b>5. 主要关注</b></div>
+  <div>表示：简要提示节拍外等待主要发生在哪里，以及哪些车型的工程加工工时超过能力上限。</div>
+  <div>计算口径：主界面只显示摘要；逐车等待证据和完整原因链在车辆明细中查询。</div>
   <div>本次计算：{risk_calc}</div>
 
   <div style="margin-top:10px; color:#475569;">
