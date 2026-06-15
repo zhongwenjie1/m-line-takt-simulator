@@ -3909,23 +3909,31 @@ class ExportTicketWindow(QMainWindow):
         scope_note = str(scope_text.get("note", "当前分析结果") or "当前分析结果")
 
         # 构建包含投车模式、A/B/C 数量、批次规模、目标节拍的完整统计范围文本
+        def _fmt_takt(value):
+            try:
+                num = float(value or 0)
+            except (TypeError, ValueError):
+                return str(value)
+            if abs(num - round(num)) < 1e-9:
+                return str(int(round(num)))
+            return f"{num:.1f}"
         if is_ratio:
             ratio_a = int(self.spn_a_cars.value()) if hasattr(self, "spn_a_cars") else 0
             ratio_b = int(self.spn_b_cars.value()) if hasattr(self, "spn_b_cars") else 0
             ratio_c = int(self.spn_c_cars.value()) if hasattr(self, "spn_c_cars") else 0
             scope_full_text = (
-                f"按比例投车｜{ratio_a} : {ratio_b} : {ratio_c}"
+                f"按比例投车｜A{ratio_a} / B{ratio_b} / C{ratio_c}"
                 f"｜分析窗口{int(analysis_seconds // 60)}分钟"
-                f"｜目标节拍{target_takt} s/台"
+                f"｜目标节拍{_fmt_takt(target_takt)}s/台"
             )
         else:
             qty_a = int(self.spn_a_cars.value()) if hasattr(self, "spn_a_cars") else 0
             qty_b = int(self.spn_b_cars.value()) if hasattr(self, "spn_b_cars") else 0
             qty_c = int(self.spn_c_cars.value()) if hasattr(self, "spn_c_cars") else 0
             scope_full_text = (
-                f"按数量投车｜{qty_a} / {qty_b} / {qty_c}"
+                f"按数量投车｜A{qty_a} / B{qty_b} / C{qty_c}"
                 f"｜目标批次{qty_a + qty_b + qty_c}台"
-                f"｜目标节拍{target_takt} s/台"
+                f"｜目标节拍{_fmt_takt(target_takt)}s/台"
             )
         return {
             "exported_at": default_export_timestamp(),

@@ -288,7 +288,7 @@ def _write_vehicle_details(workbook, payload, records):
         sheet.column_dimensions[get_column_letter(column)].width = width
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
-            cell.alignment = Alignment(vertical="top", wrap_text=cell.column == 19)
+            cell.alignment = Alignment(vertical="top", wrap_text=False)
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
 
