@@ -1127,21 +1127,29 @@ class ExportTicketWindow(QMainWindow):
         return list(self._frozen_vehicle_sequence)
 
     def do_analyze(self):
-        try:
+        self.btn_analyze.setEnabled(False)
+        self.btn_analyze.setText("正在分析…")
+        self.status.showMessage("正在分析当前排程，请稍候…")
+
+        def _run():
             project, cars, grid_step, wait_policy, defs, vehicle_counts, sequence_mode, max_consecutive, ratio_pattern, target_takt = self._collect_inputs()
             frozen_sequence = self._frozen_sequence_for_current_inputs(sequence_mode)
             rows, max_finish = tickets.schedule(
-                defs,
-                cars,
-                vehicle_counts,
-                sequence_mode,
-                max_consecutive,
-                ratio_pattern,
-                launch_takt=target_takt,
-                vehicle_sequence=frozen_sequence,
+                defs, cars, vehicle_counts, sequence_mode, max_consecutive,
+                ratio_pattern, launch_takt=target_takt, vehicle_sequence=frozen_sequence,
             )
             analysis = tickets.analyze_schedule(rows, max_finish, target_takt)
             analysis = self._apply_time_window_analysis(analysis, rows, target_takt)
+            return rows, analysis, max_finish, defs
+
+        worker = Worker(_run)
+        self._analysis_request_in_flight = getattr(self, "_analysis_request_in_flight", 0) + 1
+        request_id = self._analysis_request_in_flight
+
+        def _on_result(result):
+            if getattr(self, "_analysis_request_in_flight", 0) != request_id:
+                return
+            rows, analysis, max_finish, defs = result
             self.current_defs = list(defs or [])
             self.last_schedule_rows = rows
             self.last_analysis = analysis
@@ -1158,11 +1166,25 @@ class ExportTicketWindow(QMainWindow):
             self._show_analysis_result(analysis)
             self._update_realtime_model_result()
             self.status.showMessage("排程分析完成", 6000)
-        except Exception as e:
-            import traceback
-            detail = traceback.format_exc()
-            print(detail)
-            QMessageBox.warning(self, "分析失败", str(e))
+            self.btn_analyze.setEnabled(True)
+            self.btn_analyze.setText("分析当前排程")
+
+        def _on_error(error_text):
+            if getattr(self, "_analysis_request_in_flight", 0) != request_id:
+                return
+            print(error_text)
+            self.btn_analyze.setEnabled(True)
+            self.btn_analyze.setText("分析当前排程")
+            QMessageBox.warning(self, "分析失败", str(error_text).splitlines()[-1] if error_text else "未知错误")
+
+        def _on_finished():
+            if getattr(self, "_analysis_request_in_flight", 0) == request_id:
+                self._analysis_request_in_flight = 0
+
+        worker.signals.result.connect(_on_result)
+        worker.signals.error.connect(_on_error)
+        worker.signals.finished.connect(_on_finished)
+        self.thread_pool.start(worker)
     def _update_sim_total_wait_label(self):
         """刷新仿真控制栏中的关键判定信息。"""
         if not hasattr(self, "lbl_sim_total_wait"):
