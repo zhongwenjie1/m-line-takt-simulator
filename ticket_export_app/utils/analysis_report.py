@@ -232,9 +232,10 @@ def _write_overview(workbook, payload, records):
     section_row = sheet.max_row + 2
     _section(sheet, section_row, "三、等待与工程提示", 4)
     _table_header(sheet, section_row + 1, ("项目", "摘要", "作用", "详细位置"))
-    sheet.append(("主要等待位置", payload["excess_station_text"] or "无", "定位等待集中工程", "车辆时间明细"))
+    sheet.append(("主要节拍外等待位置", payload["excess_station_text"] or "无", "定位等待集中工程", "车辆时间明细"))
     sheet.append(("超节拍工程", payload["capacity_station_text"] or "无", "识别加工工时超过工程能力上限的车型", "计算口径说明"))
     sheet.append(("节奏净差值", payload["net_takt_delta_text"], "解释整体节拍与目标节拍的差异", "车辆时间明细"))
+    sheet.append(("重要说明", "累计等待已经体现在各车下线时间中，不能再次加到总完成时间。", "详细车辆与工程记录见“车辆时间明细”。", "概念解释见“计算口径说明”。"))
 
     for column, width in enumerate((22, 42, 42, 34), start=1):
         sheet.column_dimensions[get_column_letter(column)].width = width
@@ -287,7 +288,7 @@ def _write_vehicle_details(workbook, payload, records):
         sheet.column_dimensions[get_column_letter(column)].width = width
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
-            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in (18, 19))
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column == 19)
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
 
@@ -298,7 +299,7 @@ def _write_definitions(workbook, payload):
     sheet["A2"] = "原则"
     sheet["B2"] = "汇总结果必须能从“车辆时间明细”逐行复算；本页只解释口径，不产生新的排程结果。"
     sheet.merge_cells("B2:C2")
-    sheet["A3"] = "本次统计范围"
+    sheet["A3"] = "统计范围"
     sheet["B3"] = payload["scope_note"]
     sheet.merge_cells("B3:C3")
     _table_header(sheet, 5, ("名称", "大白话解释", "核对方法 / 注意事项"))

@@ -3881,32 +3881,55 @@ class ExportTicketWindow(QMainWindow):
                 advances += -delta
         net_delta = delays - advances
         net_takt_delta_text = (
-            f"延误 {delays:.1f}s - 提前补偿 {advances:.1f}s = {net_delta:+.1f}s"
+            f"延误 {delays:.1f}s - 提前补偿 {advances:.1f}s = {net_delta:.1f}s"
             if len(scope_records) >= 2 else "-"
         )
 
-        excess_station_text = "；".join(
+        excess_station_text = "｜".join(
             f"{item.get('station', '未知工程')} {float(item.get('wait_time', 0.0) or 0.0):.1f}s"
             for item in list(model_summary.get("excess_wait_by_station", []) or [])[:3]
         )
         realtime = self._build_realtime_model_result(float(getattr(self, "last_max_finish", 0.0) or 0.0))
-        capacity_parts = []
+        capacity_items = []
         for item in list(realtime.get("capacity_over_stations", []) or []):
-            by_type = dict(item.get("by_type", {}) or {})
-            types = "/".join(
-                vehicle_type for vehicle_type in ("A", "B", "C")
-                if int(by_type.get(vehicle_type, 0) or 0) > 0
-            )
-            capacity_parts.append(
-                f"{item.get('station', '未知工程')} {types} "
-                f"{float(item.get('max_over', 0.0) or 0.0):.1f}s/台".strip()
-            )
+            station_name = item.get("station", "未知工程")
+            for vehicle_type in ("A", "B", "C"):
+                per_type = float((item.get("by_type", {}) or {}).get(vehicle_type, 0.0) or 0.0)
+                if per_type > 0:
+                    capacity_items.append((per_type, station_name, vehicle_type))
+        capacity_items.sort(key=lambda item: (-item[0], item[1], item[2]))
+        capacity_parts = [
+            f"{station_name} {vehicle_type} {per_type:.1f}s/台"
+            for per_type, station_name, vehicle_type in capacity_items
+        ]
 
         scope_text = dict(model_summary.get("result_scope_text", {}) or {})
+        scope_note = str(scope_text.get("note", "当前分析结果") or "当前分析结果")
+
+        # 构建包含投车模式、A/B/C 数量、批次规模、目标节拍的完整统计范围文本
+        if is_ratio:
+            ratio_a = int(self.spn_a_cars.value()) if hasattr(self, "spn_a_cars") else 0
+            ratio_b = int(self.spn_b_cars.value()) if hasattr(self, "spn_b_cars") else 0
+            ratio_c = int(self.spn_c_cars.value()) if hasattr(self, "spn_c_cars") else 0
+            scope_full_text = (
+                f"按比例投车｜{ratio_a} : {ratio_b} : {ratio_c}"
+                f"｜分析窗口{int(analysis_seconds // 60)}分钟"
+                f"｜目标节拍{target_takt} s/台"
+            )
+        else:
+            qty_a = int(self.spn_a_cars.value()) if hasattr(self, "spn_a_cars") else 0
+            qty_b = int(self.spn_b_cars.value()) if hasattr(self, "spn_b_cars") else 0
+            qty_c = int(self.spn_c_cars.value()) if hasattr(self, "spn_c_cars") else 0
+            scope_full_text = (
+                f"按数量投车｜{qty_a} / {qty_b} / {qty_c}"
+                f"｜目标批次{qty_a + qty_b + qty_c}台"
+                f"｜目标节拍{target_takt} s/台"
+            )
         return {
             "exported_at": default_export_timestamp(),
             "is_ratio_mode": is_ratio,
-            "scope_note": str(scope_text.get("note", "当前分析结果") or "当前分析结果"),
+            "scope_note": scope_note,
+            "scope_full_text": scope_full_text,
             "output_label": "窗口内下线" if is_ratio else "下线车辆",
             "output_count": len(scope_records),
             "completion_label": "窗口末台下线" if is_ratio else "批次总完成时刻",
