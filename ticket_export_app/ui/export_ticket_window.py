@@ -1598,7 +1598,7 @@ class ExportTicketWindow(QMainWindow):
         dialog.exec()
 
     def _on_simulation_tick(self):
-        """仿真计时推进。后续车辆绘制会基于 sim_time 刷新画面。"""
+        """仿真计时推进。只同步数值和轻量标签，不强制每帧重绘场景。"""
         total = float(getattr(self, "last_max_finish", 0.0) or 0.0)
         if total <= 0:
             self._pause_simulation()
@@ -1607,6 +1607,7 @@ class ExportTicketWindow(QMainWindow):
         self._update_sim_time_label()
         self._update_sim_total_wait_label()
         self._update_sim_view()
+        # 场景绘制改为低频触发：仅在定时驱动线外显式更新，避免每帧阻塞事件循环
         self._draw_sim_scene()
         self._update_realtime_model_result()
         if self.sim_time >= total:
