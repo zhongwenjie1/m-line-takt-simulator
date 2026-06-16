@@ -12,6 +12,7 @@ from PySide6.QtGui import QAction, QColor, QPen, QBrush, QFont
 import os
 import math
 import csv
+import json
 from datetime import datetime
 from html import escape
 from openpyxl import Workbook, load_workbook
@@ -272,6 +273,14 @@ class ExportTicketWindow(QMainWindow):
         self.btn_freeze_sequence.setFixedWidth(82)
         self.btn_freeze_sequence.setToolTip("生成并冻结当前按数量交替混流的完整投车顺序")
         row_top_3.addWidget(self.btn_freeze_sequence)
+        self.btn_export_frozen_sequence = QPushButton("导出冻结", self.page_multi_input)
+        self.btn_export_frozen_sequence.setFixedWidth(82)
+        self.btn_export_frozen_sequence.setToolTip("导出当前冻结投车顺序，用于其他电脑复现同一排列")
+        row_top_3.addWidget(self.btn_export_frozen_sequence)
+        self.btn_import_frozen_sequence = QPushButton("导入冻结", self.page_multi_input)
+        self.btn_import_frozen_sequence.setFixedWidth(82)
+        self.btn_import_frozen_sequence.setToolTip("导入冻结投车顺序；程序版本、规则和当前数量必须一致")
+        row_top_3.addWidget(self.btn_import_frozen_sequence)
         self.lbl_sequence_freeze_status = QLabel("未冻结")
         self.lbl_sequence_freeze_status.setStyleSheet("color: #8a5a00; font-size: 12px;")
         row_top_3.addWidget(self.lbl_sequence_freeze_status)
@@ -668,6 +677,8 @@ class ExportTicketWindow(QMainWindow):
         self.cmb_grid.currentTextChanged.connect(self._invalidate_analysis_result)
         self.tbl.itemChanged.connect(self._invalidate_analysis_result)
         self.btn_freeze_sequence.clicked.connect(self._freeze_vehicle_sequence)
+        self.btn_export_frozen_sequence.clicked.connect(self._export_frozen_vehicle_sequence)
+        self.btn_import_frozen_sequence.clicked.connect(self._import_frozen_vehicle_sequence)
         self.btn_go_result_page.clicked.connect(lambda: self.multi_tabs.setCurrentWidget(self.page_multi_result_scroll))
         self.btn_analyze.clicked.connect(self.do_analyze)
         self.btn_export.clicked.connect(self.do_export)
@@ -796,8 +807,21 @@ class ExportTicketWindow(QMainWindow):
         is_quantity = self.cmb_launch_mode.currentIndex() == 0
         is_alternate = self.cmb_seq.currentIndex() == 1
         self.btn_freeze_sequence.setVisible(is_quantity)
+        if hasattr(self, "btn_export_frozen_sequence"):
+            self.btn_export_frozen_sequence.setVisible(is_quantity)
+        if hasattr(self, "btn_import_frozen_sequence"):
+            self.btn_import_frozen_sequence.setVisible(is_quantity)
         self.lbl_sequence_freeze_status.setVisible(is_quantity)
         self.btn_freeze_sequence.setEnabled(is_quantity and is_alternate)
+        if hasattr(self, "btn_export_frozen_sequence"):
+            self.btn_export_frozen_sequence.setEnabled(
+                is_quantity
+                and is_alternate
+                and self._frozen_vehicle_sequence is not None
+                and self._frozen_vehicle_sequence_signature == self._sequence_freeze_signature()
+            )
+        if hasattr(self, "btn_import_frozen_sequence"):
+            self.btn_import_frozen_sequence.setEnabled(is_quantity and is_alternate)
         if is_quantity and not is_alternate:
             self.lbl_sequence_freeze_status.setText("顺排无需冻结")
             self.lbl_sequence_freeze_status.setStyleSheet("color: #667085; font-size: 12px;")
@@ -826,6 +850,215 @@ class ExportTicketWindow(QMainWindow):
                 run = 1
             max_run = max(max_run, run)
         return max_run
+
+    @staticmethod
+    def _canonical_json_sha256(payload):
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        import hashlib
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _app_version_info(self):
+        default = {
+            "name": "M-Line 混流节拍仿真系统",
+            "version": "2.9.0",
+            "tag": "v2.9-result-risk-final",
+        }
+        version_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "version.json"))
+        try:
+            with open(version_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {
+                "name": str(data.get("name") or default["name"]),
+                "version": str(data.get("version") or default["version"]),
+                "tag": str(data.get("tag") or default["tag"]),
+            }
+        except Exception:
+            return default
+
+    def _current_quantity_sequence_context(self):
+        vehicle_counts = {
+            "A": int(self.spn_a_cars.value()),
+            "B": int(self.spn_b_cars.value()),
+            "C": int(self.spn_c_cars.value()),
+        }
+        return {
+            "mode": "quantity",
+            "sequence_mode": "alternate",
+            "vehicle_counts": vehicle_counts,
+            "total_cars": sum(vehicle_counts.values()),
+            "max_consecutive": int(self.spn_max_run.value()),
+            "rule_version": tickets.QUANTITY_SEQUENCE_RULE_VERSION,
+        }
+
+    def _build_sequence_freeze_payload(self):
+        if self.cmb_launch_mode.currentIndex() != 0 or self.cmb_seq.currentIndex() != 1:
+            raise ValueError("冻结序列导出仅支持按数量投车 + 交替混流。")
+        vehicle_sequence = self._frozen_sequence_for_current_inputs("alternate")
+        context = self._current_quantity_sequence_context()
+        sequence_hash = tickets.vehicle_sequence_hash(vehicle_sequence)
+        actual_counts = {
+            vehicle_type: vehicle_sequence.count(vehicle_type)
+            for vehicle_type in ("A", "B", "C")
+        }
+        if actual_counts != context["vehicle_counts"]:
+            raise ValueError("当前冻结序列与A/B/C数量不一致，不能导出。")
+        payload = {
+            "schema": "mline.freeze.sequence.v1",
+            "app": self._app_version_info(),
+            "sequence_rule_version": context["rule_version"],
+            "mode": context["mode"],
+            "sequence_mode": context["sequence_mode"],
+            "vehicle_counts": context["vehicle_counts"],
+            "total_cars": context["total_cars"],
+            "max_consecutive": context["max_consecutive"],
+            "generated_at": self._frozen_vehicle_sequence_generated_at or datetime.now().isoformat(timespec="seconds"),
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "sequence_sha256": sequence_hash,
+            "actual_max_run": self._max_sequence_run(vehicle_sequence),
+            "preview_first_30": "".join(vehicle_sequence[:30]),
+            "sequence": list(vehicle_sequence),
+        }
+        payload["payload_sha256"] = self._canonical_json_sha256({
+            key: value for key, value in payload.items() if key != "payload_sha256"
+        })
+        return payload
+
+    def _validate_sequence_freeze_payload(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("冻结文件格式不正确。")
+        if payload.get("schema") != "mline.freeze.sequence.v1":
+            raise ValueError("冻结文件schema不匹配。")
+        payload_hash = payload.get("payload_sha256", "")
+        if not payload_hash:
+            raise ValueError("冻结文件缺少payload校验码。")
+        actual_payload_hash = self._canonical_json_sha256({
+            key: value for key, value in payload.items() if key != "payload_sha256"
+        })
+        if payload_hash != actual_payload_hash:
+            raise ValueError("冻结文件payload校验失败，文件可能已被修改。")
+
+        app = payload.get("app") or {}
+        current_app = self._app_version_info()
+        if str(app.get("version", "")) != current_app["version"]:
+            raise ValueError(
+                f"程序版本不一致：文件为 {app.get('version', '-')}, 当前为 {current_app['version']}。"
+            )
+        if payload.get("sequence_rule_version") != tickets.QUANTITY_SEQUENCE_RULE_VERSION:
+            raise ValueError(
+                f"排列规则版本不一致：文件为 {payload.get('sequence_rule_version', '-')}, "
+                f"当前为 {tickets.QUANTITY_SEQUENCE_RULE_VERSION}。"
+            )
+        if payload.get("mode") != "quantity" or payload.get("sequence_mode") != "alternate":
+            raise ValueError("冻结文件仅支持按数量投车 + 交替混流。")
+        if self.cmb_launch_mode.currentIndex() != 0 or self.cmb_seq.currentIndex() != 1:
+            raise ValueError("当前界面必须切换到按数量投车 + 交替混流后才能导入。")
+
+        context = self._current_quantity_sequence_context()
+        try:
+            payload_counts = {
+                "A": int(payload.get("vehicle_counts", {}).get("A", 0) or 0),
+                "B": int(payload.get("vehicle_counts", {}).get("B", 0) or 0),
+                "C": int(payload.get("vehicle_counts", {}).get("C", 0) or 0),
+            }
+            total_cars = int(payload.get("total_cars", -1))
+            max_consecutive = int(payload.get("max_consecutive", -1))
+        except Exception as exc:
+            raise ValueError(f"冻结文件参数格式不正确：{exc}") from exc
+        if payload_counts != context["vehicle_counts"]:
+            raise ValueError(f"A/B/C数量不一致：文件为 {payload_counts}, 当前为 {context['vehicle_counts']}。")
+        if total_cars != context["total_cars"]:
+            raise ValueError(f"总台数不一致：文件为 {total_cars}, 当前为 {context['total_cars']}。")
+        if max_consecutive != context["max_consecutive"]:
+            raise ValueError(f"最大连续台数不一致：文件为 {max_consecutive}, 当前为 {context['max_consecutive']}。")
+
+        sequence = payload.get("sequence")
+        if not isinstance(sequence, list) or not sequence:
+            raise ValueError("冻结文件缺少完整车辆序列。")
+        sequence = [str(item).strip().upper() for item in sequence]
+        invalid = [item for item in sequence if item not in ("A", "B", "C")]
+        if invalid:
+            raise ValueError("冻结文件包含非A/B/C车型。")
+        actual_counts = {
+            vehicle_type: sequence.count(vehicle_type)
+            for vehicle_type in ("A", "B", "C")
+        }
+        if actual_counts != context["vehicle_counts"]:
+            raise ValueError(f"序列内A/B/C数量不一致：{actual_counts}。")
+        if len(sequence) != context["total_cars"]:
+            raise ValueError(f"序列长度不一致：文件为 {len(sequence)}, 当前应为 {context['total_cars']}。")
+        sequence_hash = tickets.vehicle_sequence_hash(sequence)
+        if sequence_hash != payload.get("sequence_sha256"):
+            raise ValueError("序列SHA-256校验失败，文件可能已被修改。")
+        return sequence, sequence_hash
+
+    def _apply_imported_frozen_vehicle_sequence(self, payload):
+        sequence, sequence_hash = self._validate_sequence_freeze_payload(payload)
+        self._frozen_vehicle_sequence = list(sequence)
+        self._frozen_vehicle_sequence_signature = self._sequence_freeze_signature()
+        self._frozen_vehicle_sequence_hash = sequence_hash
+        self._frozen_vehicle_sequence_generated_at = str(payload.get("generated_at", "") or "")
+        self._invalidate_analysis_result()
+        self.lbl_sequence_freeze_status.setText(
+            f"已导入 {len(sequence)}台 · {sequence_hash[:8]}"
+        )
+        self.lbl_sequence_freeze_status.setStyleSheet("color: #087443; font-size: 12px; font-weight: 600;")
+        self._update_sequence_freeze_ui()
+        return sequence, sequence_hash
+
+    def _export_frozen_vehicle_sequence(self):
+        try:
+            payload = self._build_sequence_freeze_payload()
+        except Exception as exc:
+            QMessageBox.warning(self, "导出冻结", str(exc))
+            return
+        default_name = f"M-Line冻结序列_A{payload['vehicle_counts']['A']}_B{payload['vehicle_counts']['B']}_C{payload['vehicle_counts']['C']}.mline-sequence.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出冻结序列",
+            default_name,
+            "M-Line冻结序列 (*.mline-sequence.json);;JSON (*.json)",
+        )
+        if not path:
+            return
+        if not (path.endswith(".mline-sequence.json") or path.endswith(".json")):
+            path += ".mline-sequence.json"
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "导出冻结完成",
+            f"已导出冻结序列：\n{path}\n\nSHA-256：{payload['sequence_sha256']}",
+        )
+
+    def _import_frozen_vehicle_sequence(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入冻结序列",
+            "",
+            "M-Line冻结序列 (*.mline-sequence.json *.json)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            sequence, sequence_hash = self._apply_imported_frozen_vehicle_sequence(payload)
+        except Exception as exc:
+            QMessageBox.critical(self, "导入冻结失败", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "导入冻结完成",
+            "\n".join([
+                f"已导入 {len(sequence)} 台冻结序列。",
+                f"SHA-256：{sequence_hash}",
+                "请重新点击“分析当前排程”生成结果。",
+            ]),
+        )
 
     def _freeze_vehicle_sequence(self):
         if self.cmb_launch_mode.currentIndex() != 0 or self.cmb_seq.currentIndex() != 1:
@@ -868,6 +1101,7 @@ class ExportTicketWindow(QMainWindow):
             f"已冻结 {len(vehicle_sequence)}台 · {sequence_hash[:8]}"
         )
         self.lbl_sequence_freeze_status.setStyleSheet("color: #087443; font-size: 12px; font-weight: 600;")
+        self._update_sequence_freeze_ui()
         preview = "".join(vehicle_sequence[:30])
         QMessageBox.information(
             self,
