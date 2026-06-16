@@ -67,7 +67,11 @@ def _verify_ratio(window: ExportTicketWindow) -> dict:
     workbook = load_workbook(output, read_only=False, data_only=False)
     overview = workbook["结果总览"]
     detail = workbook["车辆时间明细"]
-    assert "按分析时间60分钟（3600s）统计" in str(overview["B3"].value)
+    scope_text = str(overview["B3"].value)
+    assert "按比例投车" in scope_text
+    assert "A4" in scope_text and "B2" in scope_text and "C0" in scope_text
+    assert "分析窗口60分钟" in scope_text
+    assert "目标节拍58s/台" in scope_text
     scopes = {detail.cell(row=row, column=2).value for row in range(2, detail.max_row + 1)}
     assert "分析窗口内" in scopes
     assert "目标批次窗口外" in scopes
