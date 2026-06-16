@@ -393,7 +393,7 @@ class ExportTicketWindow(QMainWindow):
         self.btn_export_analysis_report.setFixedHeight(24)
         self.btn_export_analysis_report.setMinimumWidth(104)
         self.btn_export_analysis_report.setToolTip(
-            "导出结果总览、车辆时间明细和计算口径说明。\n"
+            "导出结果总览、车辆时间明细、等待真因明细和计算口径说明。\n"
             "报告直接使用当前分析结果，不会重新运行排程。"
         )
         self.btn_export_analysis_report.setStyleSheet(
@@ -546,11 +546,11 @@ class ExportTicketWindow(QMainWindow):
         vehicle_log_layout = QHBoxLayout(vehicle_log_entry)
         vehicle_log_layout.setContentsMargins(12, 8, 12, 8)
         vehicle_log_layout.setSpacing(8)
-        vehicle_log_title = QLabel("车辆明细 / 调试日志", vehicle_log_entry)
+        vehicle_log_title = QLabel("车辆查询", vehicle_log_entry)
         vehicle_log_title.setStyleSheet("font-size: 13px; font-weight: 700; color: #334155;")
         vehicle_log_layout.addWidget(vehicle_log_title)
         vehicle_log_layout.addStretch()
-        self.btn_vehicle_log = QPushButton("查看车辆日志", vehicle_log_entry)
+        self.btn_vehicle_log = QPushButton("车辆查询", vehicle_log_entry)
         vehicle_log_layout.addWidget(self.btn_vehicle_log)
         result_layout.addWidget(vehicle_log_entry, 0)
 
@@ -558,7 +558,7 @@ class ExportTicketWindow(QMainWindow):
         self.txt_schedule_debug.setReadOnly(True)
         self.txt_schedule_debug.setMaximumBlockCount(300)
         self.txt_schedule_debug.setMaximumHeight(160)
-        self.txt_schedule_debug.setPlaceholderText("排程运行日志：点击『分析当前排程』后显示前 200 条 rows 明细。")
+        self.txt_schedule_debug.setPlaceholderText("车辆查询缓存：点击『分析当前排程』后生成。")
         self.txt_schedule_debug.setStyleSheet(
             "background: #0f172a;"
             "border: 1px solid #334155;"
@@ -997,7 +997,7 @@ class ExportTicketWindow(QMainWindow):
         return f"{num:.1f}"
 
     def _build_vehicle_log_rows(self):
-        """按车辆维度整理当前 rows，仅用于只读日志弹窗。"""
+        """按车辆维度整理当前 rows，仅用于车辆查询弹窗。"""
         rows = getattr(self, "last_schedule_rows", []) or []
         if not rows:
             return [], []
@@ -1008,56 +1008,120 @@ class ExportTicketWindow(QMainWindow):
             except Exception:
                 return default
 
-        def _row_station(row):
-            return str(row.get("step_display", row.get("station", row.get("group", ""))) or "")
+        def _to_float(value, default=0.0):
+            try:
+                return float(value or 0.0)
+            except Exception:
+                return default
+
+        def _station(row):
+            return str(row.get("step_display", row.get("station", row.get("group", "工程"))) or "工程")
+
+        def _value(row, *keys, default=0.0):
+            for key in keys:
+                if row.get(key) not in (None, ""):
+                    return row.get(key)
+            return default
+
+        def _fmt_seconds(value):
+            return f"{float(value or 0.0):.1f}"
+
+        def _fmt_gap(value):
+            if value is None:
+                return "-"
+            return _fmt_seconds(value)
+
+        analysis = getattr(self, "last_analysis", None)
+        analysis_summary = dict((analysis or {}).get("summary", {}) or {}) if isinstance(analysis, dict) else {}
+        model_summary = dict(getattr(self, "_last_model_result_summary", None) or {})
+        is_ratio = bool(model_summary.get("is_ratio_mode", False))
+        analysis_seconds = float(model_summary.get("analysis_time_seconds", 0.0) or 0.0)
+        theoretical_count = int(
+            analysis_summary.get(
+                "theoretical_launch_count",
+                getattr(self, "current_theoretical_launch_count", len(self._sim_car_rows())),
+            )
+            or 0
+        )
+        target_takt = float(model_summary.get("target_takt", self.spn_target_takt.value()) or 0.0)
+        capacity_results = list((analysis or {}).get("car_capacity_results", []) or []) if isinstance(analysis, dict) else []
+        if not capacity_results:
+            capacity_results = compute_car_capacity_results(rows, target_takt)
+        report_cutoff = (
+            analysis_seconds
+            if is_ratio
+            else float(getattr(self, "last_max_finish", 0.0) or 0.0)
+        )
+        records = build_vehicle_records(
+            rows,
+            is_ratio_mode=is_ratio,
+            analysis_time_seconds=analysis_seconds,
+            theoretical_launch_count=theoretical_count,
+            report_cutoff_seconds=report_cutoff,
+            target_takt=target_takt,
+            capacity_results=capacity_results,
+        )
+
+        previous_out_by_car = {}
+        previous_record = None
+        for record in sorted(records, key=lambda item: (float(item["car_out"]), int(item["car"]))):
+            previous_out_by_car[int(record["car"])] = None if previous_record is None else (
+                float(record["car_out"]) - float(previous_record["car_out"])
+            )
+            previous_record = record
+
+        wait_station_by_car = {}
+        full_actual_wait_by_car = {}
+        full_excess_wait_by_car = {}
+        grouped = self._sim_car_rows()
+        for car, car_rows in grouped.items():
+            station_waits = {}
+            total_actual_wait = 0.0
+            total_excess_wait = 0.0
+            for row in car_rows or []:
+                # 车辆查询用于单车定位。比例模式下即使车辆在分析窗口后下线，
+                # 也显示该车完整路径中的等待；统计卡片和分析报告仍按各自截止时点计算。
+                service_finish = _to_float(_value(row, "svc_finish", "service_finish", default=(
+                    _to_float(_value(row, "start", "start_time"))
+                    + _to_float(_value(row, "dur", "duration"))
+                )))
+                depart = _to_float(_value(row, "depart", "end", default=service_finish))
+                actual_wait = max(0.0, depart - service_finish)
+                if actual_wait > 1e-9:
+                    station = _station(row)
+                    station_waits[station] = station_waits.get(station, 0.0) + actual_wait
+                    total_actual_wait += actual_wait
+                    capacity = max(1, _to_int(row.get("capacity", row.get("device_count", 1)), 1))
+                    holding_limit = capacity * max(0.0, target_takt)
+                    total_excess_wait += max(0.0, depart - (service_finish + holding_limit))
+            car_number = _to_int(car)
+            full_actual_wait_by_car[car_number] = total_actual_wait
+            full_excess_wait_by_car[car_number] = total_excess_wait
+            if station_waits:
+                sorted_waits = sorted(station_waits.items(), key=lambda item: (-item[1], item[0]))
+                wait_station_by_car[car_number] = "；".join(
+                    f"{station} {_fmt_seconds(wait)}s"
+                    for station, wait in sorted_waits[:2]
+                )
 
         columns = [
-            "车辆编号", "车型", "工序序号", "工序名称", "线别", "资源标识",
-            "start", "加工完成", "离开工程", "结束时间", "加工工时", "完工后等待", "投入等待",
-            "下一工序", "下一工序 start", "备注",
+            "车辆", "车型", "投车时间", "下线时间", "实际等待",
+            "节拍外等待", "相邻下线间隔", "主要等待工程", "能力判断",
         ]
-
         output = []
-        car_rows = self._sim_car_rows()
-        sorted_car_items = sorted(
-            car_rows.items(),
-            key=lambda item: _to_int(item[0], 999999),
-        )
-        for car, segments in sorted_car_items:
-            sorted_segments = sorted(
-                list(segments or []),
-                key=lambda row: (
-                    self._sim_row_start(row),
-                    _to_int(row.get("step_seq", 0)),
-                ),
-            )
-            for idx, row in enumerate(sorted_segments):
-                next_row = sorted_segments[idx + 1] if idx + 1 < len(sorted_segments) else None
-                step_seq = _to_int(row.get("step_seq", ""), 0)
-                next_seq = _to_int(next_row.get("step_seq", ""), 0) if next_row else 0
-                note = ""
-                if next_row and step_seq > 0 and next_seq > step_seq + 1:
-                    skipped = ", ".join(str(seq) for seq in range(step_seq + 1, next_seq))
-                    note = f"跳过中间岗位：{skipped}"
-
-                output.append([
-                    str(car),
-                    str(row.get("car_type", row.get("duration_source", row.get("vehicle_type", ""))) or ""),
-                    str(row.get("step_seq", "")),
-                    _row_station(row),
-                    str(row.get("line_no", row.get("line", "")) or ""),
-                    str(row.get("resource_key", "") or ""),
-                    self._fmt_vehicle_log_value(row.get("start", row.get("start_time", ""))),
-                    self._fmt_vehicle_log_value(row.get("svc_finish", row.get("finish", ""))),
-                    self._fmt_vehicle_log_value(row.get("depart", row.get("end", ""))),
-                    self._fmt_vehicle_log_value(row.get("end", "")),
-                    self._fmt_vehicle_log_value(row.get("dur", row.get("duration", ""))),
-                    self._fmt_vehicle_log_value(row.get("block_wait", 0.0)),
-                    self._fmt_vehicle_log_value(row.get("launch_wait", 0.0)),
-                    _row_station(next_row) if next_row else "无",
-                    self._fmt_vehicle_log_value(next_row.get("start", next_row.get("start_time", ""))) if next_row else "",
-                    note,
-                ])
+        for record in sorted(records, key=lambda item: int(item["car"])):
+            car = int(record["car"])
+            output.append([
+                record["car_label"],
+                record["car_type"],
+                _fmt_seconds(record["car_in"]),
+                _fmt_seconds(record["car_out"]),
+                _fmt_seconds(full_actual_wait_by_car.get(car, 0.0)),
+                _fmt_seconds(full_excess_wait_by_car.get(car, 0.0)),
+                _fmt_gap(previous_out_by_car.get(car)),
+                wait_station_by_car.get(car, "-"),
+                record["capacity_text"],
+            ])
 
         return columns, output
 
@@ -1065,54 +1129,27 @@ class ExportTicketWindow(QMainWindow):
         lines = ["\t".join(columns)]
         lines.extend("\t".join(str(value) for value in row) for row in rows)
         QApplication.clipboard().setText("\n".join(lines))
-        self.status.showMessage("车辆日志已复制到剪贴板", 3000)
+        self.status.showMessage("车辆查询结果已复制到剪贴板", 3000)
 
-    def _filter_vehicle_log_rows(self, rows, car_text="", car_type="全部", station="全部", wait_filter="全部"):
-        """筛选现有结构化日志，不重新运行排程。"""
+    def _filter_vehicle_log_rows(self, rows, car_text=""):
+        """按车号快速锁定现有车辆查询结果，不重新运行排程。"""
         query = str(car_text or "").strip().lower().replace("car#", "").replace("#", "")
-        selected_type = str(car_type or "全部").strip().upper()
-        selected_station = str(station or "全部").strip()
-        selected_wait = str(wait_filter or "全部").strip()
-
-        excess_wait_keys = set()
-        if selected_wait == "有节拍外等待":
-            _, cause_rows = self._build_wait_cause_log_rows()
-            for cause_row in cause_rows:
-                car_no = str(cause_row[0]).replace("Car#", "").strip()
-                waiting_station = str(cause_row[2]).strip()
-                excess_wait_keys.add((car_no, waiting_station))
-
         filtered = []
         for row in rows or []:
-            car_no = str(row[0]).strip()
-            vehicle_type = str(row[1]).strip().upper()
-            row_station = str(row[3]).strip()
+            car_no = str(row[0]).strip().lower().replace("car#", "").replace("#", "")
             if query and query != car_no.lower():
-                continue
-            if selected_type != "全部" and vehicle_type != selected_type:
-                continue
-            if selected_station != "全部" and row_station != selected_station:
-                continue
-            if selected_wait == "有实际等待":
-                try:
-                    actual_wait = float(row[11] or 0.0) + float(row[12] or 0.0)
-                except Exception:
-                    actual_wait = 0.0
-                if actual_wait <= 1e-9:
-                    continue
-            elif selected_wait == "有节拍外等待" and (car_no, row_station) not in excess_wait_keys:
                 continue
             filtered.append(row)
         return filtered
 
     def _export_vehicle_log_csv(self, columns, rows, parent=None):
         if not rows:
-            QMessageBox.information(parent or self, "导出车辆日志", "当前筛选结果为空，无可导出内容。")
+            QMessageBox.information(parent or self, "导出车辆查询", "当前查询结果为空，无可导出内容。")
             return
         path, _ = QFileDialog.getSaveFileName(
             parent or self,
             "导出当前筛选结果",
-            "M-Line车辆日志_筛选结果.csv",
+            "M-Line车辆查询_筛选结果.csv",
             "CSV (*.csv)",
         )
         if not path:
@@ -1121,98 +1158,25 @@ class ExportTicketWindow(QMainWindow):
             writer = csv.writer(csv_file)
             writer.writerow(columns)
             writer.writerows(rows)
-        self.status.showMessage(f"车辆日志已导出：{path}", 5000)
+        self.status.showMessage(f"车辆查询结果已导出：{path}", 5000)
 
     def _build_compact_vehicle_log_csv_rows(self, schedule_rows):
         """将当前筛选命中的车辆整理为一车一行CSV。"""
-        if not schedule_rows:
-            return [], []
-
-        def _to_float(row, *keys):
-            for key in keys:
-                value = row.get(key)
-                if value not in (None, ""):
-                    try:
-                        return float(value)
-                    except Exception:
-                        continue
-            return 0.0
-
-        def _to_int(value, default=0):
-            try:
-                return int(float(value))
-            except Exception:
-                return default
-
-        def _fmt_seconds(value):
-            return f"{float(value or 0.0):.1f}"
-
-        def _station(row):
-            return str(row.get("step_display", row.get("station", row.get("group", "岗位"))) or "岗位")
-
-        grouped = {}
-        for row in schedule_rows:
-            car = row.get("car", row.get("car_no", row.get("car_index", "")))
-            grouped.setdefault(car, []).append(row)
-
-        try:
-            target_takt = float(self.spn_target_takt.value())
-        except Exception:
-            target_takt = 0.0
-        capacity_by_car = {
-            int(item["car"]): item
-            for item in compute_car_capacity_results(schedule_rows, target_takt)
+        selected_cars = {
+            str(row.get("car", row.get("car_no", row.get("car_index", "")))).strip()
+            for row in schedule_rows or []
         }
-
-        columns = ["CAR", "TYPE", "IN(s)", "OUT(s)", "WAIT(s)", "FLOW(s)", "能力判断", "SEGMENTS"]
-        output = []
-        for car, car_rows in sorted(grouped.items(), key=lambda item: _to_int(item[0], 999999)):
-            car_rows.sort(key=lambda row: (
-                _to_float(row, "start", "start_time"),
-                _to_int(row.get("step_seq", row.get("seq", 0))),
-            ))
-            first_start = _to_float(car_rows[0], "start", "start_time")
-            final_finish = _to_float(car_rows[-1], "depart", "end", "svc_finish", "finish")
-            total_wait = sum(
-                _to_float(row, "launch_wait") + _to_float(row, "block_wait")
-                for row in car_rows
-            )
-            car_type = str(
-                car_rows[0].get("car_type", car_rows[0].get("duration_source", car_rows[0].get("vehicle_type", "")))
-                or ""
-            )
-            capacity_result = capacity_by_car.get(_to_int(car), {})
-            capacity_text = str(capacity_result.get("capacity_status", "未设定目标") or "未设定目标")
-            if capacity_text == "能力超目标":
-                capacity_text += f"：{capacity_result.get('over_capacity_station_text', '无')}"
-
-            segments = []
-            for row in car_rows:
-                step_seq = row.get("step_seq", row.get("seq", ""))
-                step_label = f"ST{step_seq}" if step_seq not in (None, "") else "ST?"
-                segments.append(
-                    f"{step_label} {_station(row)}("
-                    f"开:{_fmt_seconds(_to_float(row, 'start', 'start_time'))}s "
-                    f"加:{_fmt_seconds(_to_float(row, 'dur', 'duration'))}s "
-                    f"等前:{_fmt_seconds(_to_float(row, 'launch_wait'))}s "
-                    f"等后:{_fmt_seconds(_to_float(row, 'block_wait'))}s)"
-                )
-
-            output.append([
-                f"Car#{car}",
-                car_type,
-                _fmt_seconds(first_start),
-                _fmt_seconds(final_finish),
-                _fmt_seconds(total_wait),
-                _fmt_seconds(max(0.0, final_finish - first_start)),
-                capacity_text,
-                " | ".join(segments),
-            ])
-        return columns, output
+        columns, rows = self._build_vehicle_log_rows()
+        if not selected_cars:
+            return columns, []
+        return columns, [
+            row for row in rows
+            if str(row[0]).replace("Car#", "").strip() in selected_cars
+        ]
 
     def _on_vehicle_summary_link_activated(self, link):
         if str(link or "") == "wait-cause-details":
-            self._show_vehicle_log_placeholder(initial_tab="cause")
+            self._show_vehicle_log_placeholder()
 
     def _build_wait_cause_log_rows(self):
         """整理当前统计范围内的节拍外等待真因明细。"""
@@ -1254,91 +1218,57 @@ class ExportTicketWindow(QMainWindow):
     def _show_vehicle_log_placeholder(self, initial_tab="vehicle"):
         rows = getattr(self, "last_schedule_rows", []) or []
         if not rows:
-            QMessageBox.information(self, "车辆明细 / 调试日志", "请先点击“分析当前排程”生成车辆日志。")
+            QMessageBox.information(self, "车辆查询", "请先点击“分析当前排程”生成车辆查询结果。")
             return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("车辆明细 / 调试日志")
-        dialog.resize(1000, 650)
+        dialog.setWindowTitle("车辆查询")
+        dialog.resize(1120, 620)
 
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
         info = QLabel(
-            "车辆明细 / 调试日志：车辆过程保持一台车一行，连续显示完整工序流转与等待；"
-            "筛选用于快速定位车辆，CSV导出与界面一致，保持一台车一行。"
-            "其中投入等待表示进入首工程前的等待，完工后等待表示加工完成后等待下一工程接收。"
+            "车辆查询仅用于按车号快速锁定当前分析结果；完整工程链、等待真因和口径复核请使用“导出分析报告”。"
         )
         info.setWordWrap(True)
         info.setStyleSheet("color:#475569;font-size:12px;")
         layout.addWidget(info)
 
-        tabs = QTabWidget(dialog)
-        layout.addWidget(tabs, 1)
-
         vehicle_page = QWidget(dialog)
         vehicle_layout = QVBoxLayout(vehicle_page)
         vehicle_layout.setContentsMargins(0, 0, 0, 0)
         vehicle_layout.setSpacing(8)
+        layout.addWidget(vehicle_page, 1)
 
         filter_row = QHBoxLayout()
         filter_row.setSpacing(6)
         filter_row.addWidget(QLabel("车号：", vehicle_page))
         car_filter = QLineEdit(vehicle_page)
-        car_filter.setPlaceholderText("例如 11 或 Car#11")
+        car_filter.setPlaceholderText("输入完整车号，例如 11 或 Car#11")
         car_filter.setMaximumWidth(150)
         filter_row.addWidget(car_filter)
-        filter_row.addWidget(QLabel("车型：", vehicle_page))
-        type_filter = QComboBox(vehicle_page)
-        type_filter.addItems(["全部", "A", "B", "C"])
-        filter_row.addWidget(type_filter)
-        filter_row.addWidget(QLabel("工位：", vehicle_page))
-        station_filter = QComboBox(vehicle_page)
         vehicle_columns, all_vehicle_rows = self._build_vehicle_log_rows()
-        station_filter.addItem("全部")
-        station_filter.addItems(sorted({str(item[3]) for item in all_vehicle_rows if str(item[3]).strip()}))
-        station_filter.setMinimumWidth(170)
-        filter_row.addWidget(station_filter)
-        filter_row.addWidget(QLabel("等待：", vehicle_page))
-        wait_filter = QComboBox(vehicle_page)
-        wait_filter.addItems(["全部", "有实际等待", "有节拍外等待"])
-        filter_row.addWidget(wait_filter)
         result_count = QLabel(vehicle_page)
         result_count.setStyleSheet("color:#475569;font-size:12px;")
         filter_row.addWidget(result_count)
         filter_row.addStretch()
         vehicle_layout.addLayout(filter_row)
 
-        text_edit = QPlainTextEdit(vehicle_page)
-        text_edit.setReadOnly(True)
-        text_edit.setStyleSheet(
-            "QPlainTextEdit{"
-            "font-family: Menlo, Monaco, Consolas, monospace;"
-            "font-size: 12px;"
-            "color: #0f172a;"
-            "background: #f8fafc;"
-            "border: 1px solid #cbd5e1;"
-            "}"
+        vehicle_table = QTableWidget(0, len(vehicle_columns), vehicle_page)
+        vehicle_table.setHorizontalHeaderLabels(vehicle_columns)
+        vehicle_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        vehicle_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        vehicle_table.setAlternatingRowColors(True)
+        vehicle_table.verticalHeader().setVisible(False)
+        vehicle_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        vehicle_table.horizontalHeader().setStretchLastSection(True)
+        vehicle_table.setStyleSheet(
+            "QTableWidget{font-size:12px;color:#0f172a;background:#f8fafc;border:1px solid #cbd5e1;}"
+            "QHeaderView::section{font-weight:700;color:#17365d;background:#e8f1fa;padding:4px;}"
         )
-        vehicle_layout.addWidget(text_edit, 1)
-        tabs.addTab(vehicle_page, "车辆过程")
-
-        cause_columns, cause_rows = self._build_wait_cause_log_rows()
-        cause_table = QTableWidget(len(cause_rows), len(cause_columns), dialog)
-        cause_table.setHorizontalHeaderLabels(cause_columns)
-        cause_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        cause_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        cause_table.setAlternatingRowColors(True)
-        cause_table.verticalHeader().setVisible(False)
-        cause_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        cause_table.horizontalHeader().setStretchLastSection(True)
-        for row_index, values in enumerate(cause_rows):
-            for column_index, value in enumerate(values):
-                cause_table.setItem(row_index, column_index, QTableWidgetItem(str(value)))
-        tabs.addTab(cause_table, f"等待真因（{len(cause_rows)}段）")
-        if initial_tab == "cause":
-            tabs.setCurrentWidget(cause_table)
+        vehicle_layout.addWidget(vehicle_table, 1)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
@@ -1351,49 +1281,31 @@ class ExportTicketWindow(QMainWindow):
         layout.addLayout(button_row)
 
         current_vehicle_rows = []
-        current_vehicle_text = ""
 
         def _refresh_vehicle_log():
-            nonlocal current_vehicle_rows, current_vehicle_text
+            nonlocal current_vehicle_rows
             current_vehicle_rows = self._filter_vehicle_log_rows(
                 all_vehicle_rows,
                 car_filter.text(),
-                type_filter.currentText(),
-                station_filter.currentText(),
-                wait_filter.currentText(),
             )
-            selected_cars = {str(item[0]) for item in current_vehicle_rows}
-            selected_rows = [
-                row for row in rows
-                if str(row.get("car", row.get("car_no", row.get("car_index", "")))) in selected_cars
-            ]
-            current_vehicle_text = self._build_schedule_debug_log(selected_rows, limit=9999)
-            text_edit.setPlainText(current_vehicle_text)
-            result_count.setText(f"{len(selected_cars)}台")
+            vehicle_table.setRowCount(len(current_vehicle_rows))
+            for row_index, values in enumerate(current_vehicle_rows):
+                for column_index, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    if column_index in (2, 3, 4, 5, 6):
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    else:
+                        item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    vehicle_table.setItem(row_index, column_index, item)
+            result_count.setText(f"{len(current_vehicle_rows)}台")
 
         def _copy_current_tab():
-            if tabs.currentWidget() is cause_table:
-                self._copy_vehicle_log_to_clipboard(cause_columns, cause_rows)
-            else:
-                QApplication.clipboard().setText(current_vehicle_text)
-                self.status.showMessage("车辆日志已复制到剪贴板", 3000)
+            self._copy_vehicle_log_to_clipboard(vehicle_columns, current_vehicle_rows)
 
         def _export_current_tab():
-            if tabs.currentWidget() is cause_table:
-                self._export_vehicle_log_csv(cause_columns, cause_rows, dialog)
-            else:
-                selected_cars = {str(item[0]) for item in current_vehicle_rows}
-                selected_rows = [
-                    row for row in rows
-                    if str(row.get("car", row.get("car_no", row.get("car_index", "")))) in selected_cars
-                ]
-                compact_columns, compact_rows = self._build_compact_vehicle_log_csv_rows(selected_rows)
-                self._export_vehicle_log_csv(compact_columns, compact_rows, dialog)
+            self._export_vehicle_log_csv(vehicle_columns, current_vehicle_rows, dialog)
 
         car_filter.textChanged.connect(_refresh_vehicle_log)
-        type_filter.currentTextChanged.connect(_refresh_vehicle_log)
-        station_filter.currentTextChanged.connect(_refresh_vehicle_log)
-        wait_filter.currentTextChanged.connect(_refresh_vehicle_log)
         btn_export.clicked.connect(_export_current_tab)
         btn_copy.clicked.connect(_copy_current_tab)
         btn_close.clicked.connect(dialog.accept)
@@ -1682,10 +1594,8 @@ class ExportTicketWindow(QMainWindow):
         capacity_by_car = {int(item["car"]): item for item in capacity_results}
 
         lines = [
-            "车辆明细 / 调试日志（按车辆维度）",
-            "说明：能力判断按车型工时÷有效设备能力与目标节拍比较；工时为0的流转节点不参加判断。",
-            "字段说明：IN=实际投车时间，OUT=下线完成时间，WAIT=单车总等待，FLOW=单车贯通时间；"
-            "SEGMENTS中的等前=投入等待，等后=加工完成后等待下一工程接收。",
+            "车辆查询（按车辆维度）",
+            "说明：本窗口用于在线筛选；完整计算口径和批次复核请导出分析报告。",
             "-" * 120,
             f"{'CAR':<8}{'TYPE':<6}{'IN(s)':>10}{'OUT(s)':>10}{'WAIT(s)':>10}{'FLOW(s)':>10}  {'能力判断':<18}  SEGMENTS",
             "-" * 120,
@@ -3725,6 +3635,7 @@ class ExportTicketWindow(QMainWindow):
             "total_excess_wait": excess_wait,
             "excess_wait_by_station": excess_station_items,
             "cause_chain_summary": cause_chain_items,
+            "cause_chain_details": realtime.get("cause_chain_details", []),
             "cause_chain_coverage_rate": realtime.get("cause_chain_coverage_rate", 1.0),
             "risk_text": risk_hint_text or "暂无明显风险",
             "blocking_station_text": risk_hint_text,
@@ -3951,6 +3862,7 @@ class ExportTicketWindow(QMainWindow):
             "total_excess_wait": float(model_summary.get("total_excess_wait", 0.0) or 0.0),
             "excess_station_text": excess_station_text,
             "capacity_station_text": "｜".join(capacity_parts),
+            "cause_chain_details": list(model_summary.get("cause_chain_details", []) or []),
             "net_takt_delta_text": net_takt_delta_text,
             "theoretical_launch_count": theoretical_count,
             "simulation_buffer_count": simulation_buffer_count,

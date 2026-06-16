@@ -38,6 +38,7 @@ def _verify_quantity(window: ExportTicketWindow) -> dict:
     assert tuple(workbook.sheetnames) == REPORT_SHEETS
     overview = workbook["结果总览"]
     detail = workbook["车辆时间明细"]
+    cause_detail = workbook["等待真因明细"]
     definitions = workbook["计算口径说明"]
     assert overview["A1"].value == "M-Line 排程分析报告"
     assert "目标批次" in str(overview["B3"].value)
@@ -46,6 +47,7 @@ def _verify_quantity(window: ExportTicketWindow) -> dict:
     assert detail["Q2"].value == "=F2-E2-G2"
     assert abs(sum(detail.cell(row=row, column=9).value or 0 for row in range(2, detail.max_row + 1)) - payload["total_actual_wait"]) < 1e-6
     assert abs(sum(detail.cell(row=row, column=10).value or 0 for row in range(2, detail.max_row + 1)) - payload["total_excess_wait"]) < 1e-6
+    assert cause_detail["A1"].value == "等待车辆"
     assert "累计实际等待" in {definitions.cell(row=row, column=1).value for row in range(1, definitions.max_row + 1)}
     assert "达标车辆" not in " ".join(str(cell.value or "") for row in overview.iter_rows() for cell in row)
     workbook.close()
@@ -67,6 +69,7 @@ def _verify_ratio(window: ExportTicketWindow) -> dict:
     workbook = load_workbook(output, read_only=False, data_only=False)
     overview = workbook["结果总览"]
     detail = workbook["车辆时间明细"]
+    cause_detail = workbook["等待真因明细"]
     scope_text = str(overview["B3"].value)
     assert "按比例投车" in scope_text
     assert "A4" in scope_text and "B2" in scope_text and "C0" in scope_text
@@ -78,6 +81,7 @@ def _verify_ratio(window: ExportTicketWindow) -> dict:
     assert "仿真缓冲" in scopes
     assert abs(sum(detail.cell(row=row, column=9).value or 0 for row in range(2, detail.max_row + 1)) - payload["total_actual_wait"]) < 1e-6
     assert abs(sum(detail.cell(row=row, column=10).value or 0 for row in range(2, detail.max_row + 1)) - payload["total_excess_wait"]) < 1e-6
+    assert cause_detail["A1"].value == "等待车辆"
     workbook.close()
     return {
         "path": str(output),

@@ -10,7 +10,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
-REPORT_SHEETS = ("结果总览", "车辆时间明细", "计算口径说明")
+REPORT_SHEETS = ("结果总览", "车辆时间明细", "等待真因明细", "计算口径说明")
 
 
 def _number(value, default=0.0):
@@ -232,7 +232,7 @@ def _write_overview(workbook, payload, records):
     section_row = sheet.max_row + 2
     _section(sheet, section_row, "三、等待与工程提示", 4)
     _table_header(sheet, section_row + 1, ("项目", "摘要", "作用", "详细位置"))
-    sheet.append(("主要节拍外等待位置", payload["excess_station_text"] or "无", "定位等待集中工程", "车辆时间明细"))
+    sheet.append(("主要节拍外等待位置", payload["excess_station_text"] or "无", "定位等待集中工程", "车辆时间明细 / 等待真因明细"))
     sheet.append(("超节拍工程", payload["capacity_station_text"] or "无", "识别加工工时超过工程能力上限的车型", "计算口径说明"))
     sheet.append(("节奏净差值", payload["net_takt_delta_text"], "解释整体节拍与目标节拍的差异", "车辆时间明细"))
     sheet.append(("重要说明", "累计等待已经体现在各车下线时间中，不能再次加到总完成时间。", "详细车辆与工程记录见“车辆时间明细”。", "概念解释见“计算口径说明”。"))
@@ -293,6 +293,56 @@ def _write_vehicle_details(workbook, payload, records):
     sheet.auto_filter.ref = sheet.dimensions
 
 
+def _write_wait_cause_details(workbook, payload):
+    sheet = workbook.create_sheet("等待真因明细")
+    headers = (
+        "等待车辆", "车型", "等待发生工程", "等待开始(s)", "等待结束(s)", "本段节拍外等待(s)",
+        "直接阻挡车辆", "直接阻挡工程", "直接阻挡资源", "真因车辆", "等待真因", "阻挡证据链",
+    )
+    _table_header(sheet, 1, headers)
+    details = list(payload.get("cause_chain_details", []) or [])
+    if details:
+        details.sort(key=lambda item: (_number(item.get("wait_start")), _integer(item.get("car"))))
+        for row_index, item in enumerate(details, start=2):
+            chain_parts = []
+            for node in item.get("chain", []) or []:
+                waiting_car = node.get("waiting_car")
+                blocker_car = node.get("blocker_car")
+                station = str(node.get("blocked_station", "") or "未知工程")
+                if blocker_car is None:
+                    chain_parts.append(f"Car#{waiting_car} 等待 {station}（未解析）")
+                else:
+                    chain_parts.append(f"Car#{waiting_car} 等 Car#{blocker_car} 释放 {station}")
+            values = [
+                f"Car#{item.get('car', '')}",
+                str(item.get("car_type", "") or ""),
+                str(item.get("waiting_station", "") or ""),
+                _number(item.get("wait_start")),
+                _number(item.get("wait_end")),
+                _number(item.get("wait_time")),
+                "" if item.get("direct_blocker_car") is None else f"Car#{item.get('direct_blocker_car')}",
+                str(item.get("direct_blocking_station", "") or ""),
+                str(item.get("direct_blocking_resource", "") or ""),
+                "" if item.get("terminal_car") is None else f"Car#{item.get('terminal_car')}",
+                str(item.get("terminal_cause", "") or ""),
+                " → ".join(chain_parts),
+            ]
+            for column, value in enumerate(values, start=1):
+                sheet.cell(row_index, column, value)
+    else:
+        sheet.cell(2, 1, "当前统计范围内未产生节拍外等待真因明细。")
+        sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+
+    widths = (14, 8, 24, 16, 16, 20, 16, 24, 28, 14, 28, 80)
+    for column, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    for row in sheet.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+
+
 def _write_definitions(workbook, payload):
     sheet = workbook.create_sheet("计算口径说明")
     _apply_sheet_title(sheet, "计算口径说明", 3)
@@ -334,6 +384,7 @@ def write_analysis_report(path, payload):
     workbook = Workbook()
     _write_overview(workbook, payload, records)
     _write_vehicle_details(workbook, payload, records)
+    _write_wait_cause_details(workbook, payload)
     _write_definitions(workbook, payload)
     workbook.save(output_path)
 

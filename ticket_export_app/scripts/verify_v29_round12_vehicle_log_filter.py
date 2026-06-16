@@ -51,18 +51,20 @@ def main() -> None:
     car_11 = window._filter_vehicle_log_rows(log_rows, "Car#11")
     car_12 = window._filter_vehicle_log_rows(log_rows, "12")
     last_car = window._filter_vehicle_log_rows(log_rows, "1148")
-    actual_wait = window._filter_vehicle_log_rows(log_rows, wait_filter="有实际等待")
-    excess_wait = window._filter_vehicle_log_rows(log_rows, wait_filter="有节拍外等待")
 
-    assert len(log_rows) == 17_220
-    assert len(car_11) == 15 and {row[0] for row in car_11} == {"11"}
-    assert len(car_12) == 15 and {row[0] for row in car_12} == {"12"}
-    assert len(last_car) == 15 and {row[0] for row in last_car} == {"1148"}
-    assert len(actual_wait) == 6_736
-    assert len(excess_wait) == 255
-    assert {row[3] for row in excess_wait} == {"L2++", "电检1", "空气悬挂+快充"}
+    expected_columns = [
+        "车辆", "车型", "投车时间", "下线时间", "实际等待",
+        "节拍外等待", "相邻下线间隔", "主要等待工程", "能力判断",
+    ]
+    assert columns == expected_columns
+    assert len(log_rows) == 1_148
+    assert len(car_11) == 1 and car_11[0][0] == "Car#11"
+    assert len(car_12) == 1 and car_12[0][0] == "Car#12"
+    assert len(last_car) == 1 and last_car[0][0] == "Car#1148"
+    assert window._filter_vehicle_log_rows(log_rows, "11") == car_11
+    assert not window._filter_vehicle_log_rows(log_rows, "111111")
 
-    car_11_ids = {row[0] for row in car_11}
+    car_11_ids = {row[0].replace("Car#", "") for row in car_11}
     car_11_source_rows = [row for row in rows if str(row.get("car", "")) in car_11_ids]
     car_11_text = window._build_schedule_debug_log(car_11_source_rows, limit=9999)
     assert "Car#11" in car_11_text
@@ -73,13 +75,13 @@ def main() -> None:
     assert "等前:" in car_11_text and "等后:" in car_11_text
 
     selected_car_ids = {row[0] for row in car_11}
-    selected_schedule_rows = [row for row in rows if str(row.get("car", "")) in selected_car_ids]
+    selected_schedule_rows = [row for row in rows if f"Car#{row.get('car', '')}" in selected_car_ids]
     compact_columns, compact_rows = window._build_compact_vehicle_log_csv_rows(selected_schedule_rows)
     all_compact_columns, all_compact_rows = window._build_compact_vehicle_log_csv_rows(rows)
-    assert compact_columns == ["CAR", "TYPE", "IN(s)", "OUT(s)", "WAIT(s)", "FLOW(s)", "能力判断", "SEGMENTS"]
+    assert compact_columns == expected_columns
     assert all_compact_columns == compact_columns and len(all_compact_rows) == 1_148
     assert len(compact_rows) == 1 and compact_rows[0][0] == "Car#11"
-    assert compact_rows[0][7].count("ST") == 15
+    assert len(compact_rows[0]) == len(expected_columns)
 
     export_path = Path(tempfile.gettempdir()) / "mline_round12_vehicle_log.csv"
     original_dialog = QFileDialog.getSaveFileName
@@ -94,10 +96,8 @@ def main() -> None:
     assert exported[0] == compact_columns and exported[1:] == compact_rows
 
     print({
-        "all_segment_rows": len(log_rows), "car_11_rows": len(car_11),
+        "vehicle_rows": len(log_rows), "car_11_rows": len(car_11),
         "car_12_rows": len(car_12), "last_car_rows": len(last_car),
-        "actual_wait_rows": len(actual_wait), "excess_wait_rows": len(excess_wait),
-        "excess_wait_stations": sorted({row[3] for row in excess_wait}),
         "csv_matches_filter": exported[1:] == compact_rows,
         "csv_vehicle_rows": len(compact_rows),
         "all_csv_vehicle_rows": len(all_compact_rows),
