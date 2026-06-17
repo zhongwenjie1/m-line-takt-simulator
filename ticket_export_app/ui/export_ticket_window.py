@@ -13,6 +13,7 @@ import os
 import math
 import csv
 import json
+import bisect
 from datetime import datetime
 from html import escape
 from openpyxl import Workbook, load_workbook
@@ -276,10 +277,12 @@ class ExportTicketWindow(QMainWindow):
         self.btn_export_frozen_sequence = QPushButton("导出冻结", self.page_multi_input)
         self.btn_export_frozen_sequence.setFixedWidth(82)
         self.btn_export_frozen_sequence.setToolTip("导出当前冻结投车顺序，用于其他电脑复现同一排列")
+        self.btn_export_frozen_sequence.hide()
         row_top_3.addWidget(self.btn_export_frozen_sequence)
         self.btn_import_frozen_sequence = QPushButton("导入冻结", self.page_multi_input)
         self.btn_import_frozen_sequence.setFixedWidth(82)
         self.btn_import_frozen_sequence.setToolTip("导入冻结投车顺序；程序版本、规则和当前数量必须一致")
+        self.btn_import_frozen_sequence.hide()
         row_top_3.addWidget(self.btn_import_frozen_sequence)
         self.lbl_sequence_freeze_status = QLabel("未冻结")
         self.lbl_sequence_freeze_status.setStyleSheet("color: #8a5a00; font-size: 12px;")
@@ -383,6 +386,12 @@ class ExportTicketWindow(QMainWindow):
         self.last_max_finish = 0.0
         self._last_model_result_summary = None
         self._analysis_result_stale = False
+        self._sim_car_rows_cache = None
+        self._sim_car_rows_cache_source = None
+        self._sim_event_cache = None
+        self._sim_event_cache_source = None
+        self._sim_static_signature = None
+        self._sim_dynamic_items = []
 
         self.lbl_vehicle_summary = QLabel("")
         self.lbl_vehicle_summary.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -717,6 +726,21 @@ class ExportTicketWindow(QMainWindow):
             if widget is not None:
                 widget.setEnabled(bool(available))
 
+    def _invalidate_sim_scene_cache(self):
+        """清理仿真绘制缓存；不影响排程数据本身。"""
+        self._sim_car_rows_cache = None
+        self._sim_car_rows_cache_source = None
+        self._sim_event_cache = None
+        self._sim_event_cache_source = None
+        self._sim_static_signature = None
+        for item in list(getattr(self, "_sim_dynamic_items", []) or []):
+            try:
+                if hasattr(self, "sim_scene") and item.scene() is self.sim_scene:
+                    self.sim_scene.removeItem(item)
+            except Exception:
+                pass
+        self._sim_dynamic_items = []
+
     def _invalidate_analysis_result(self, *_args):
         """排程输入变化后立即废弃旧结果，避免旧rows与新参数混合显示。"""
         had_result = bool(
@@ -733,6 +757,7 @@ class ExportTicketWindow(QMainWindow):
         self.last_analysis = None
         self.last_max_finish = 0.0
         self._last_model_result_summary = None
+        self._invalidate_sim_scene_cache()
         self.sim_time = 0.0
         self._analysis_result_stale = had_result
         self._set_analysis_result_available(False)
@@ -812,9 +837,9 @@ class ExportTicketWindow(QMainWindow):
         is_alternate = self.cmb_seq.currentIndex() == 1
         self.btn_freeze_sequence.setVisible(is_quantity)
         if hasattr(self, "btn_export_frozen_sequence"):
-            self.btn_export_frozen_sequence.setVisible(is_quantity)
+            self.btn_export_frozen_sequence.setVisible(False)
         if hasattr(self, "btn_import_frozen_sequence"):
-            self.btn_import_frozen_sequence.setVisible(is_quantity)
+            self.btn_import_frozen_sequence.setVisible(False)
         self.lbl_sequence_freeze_status.setVisible(is_quantity)
         self.btn_freeze_sequence.setEnabled(is_quantity and is_alternate)
         if hasattr(self, "btn_export_frozen_sequence"):
@@ -1130,6 +1155,11 @@ class ExportTicketWindow(QMainWindow):
             raise ValueError("当前交替混流排列尚未冻结，请先点击“排列冻结”。")
         return list(self._frozen_vehicle_sequence)
 
+    def _restore_analyze_button(self):
+        self.btn_analyze.setEnabled(True)
+        self.btn_analyze.setText("分析当前排程")
+        self.btn_cancel_analysis.setVisible(False)
+
     def do_analyze(self):
         self.btn_analyze.setEnabled(False)
         self.btn_analyze.setText("正在分析…")
@@ -1160,6 +1190,7 @@ class ExportTicketWindow(QMainWindow):
             self.last_schedule_rows = rows
             self.last_analysis = analysis
             self.last_max_finish = float(max_finish or 0.0)
+            self._invalidate_sim_scene_cache()
             self._analysis_result_stale = False
             self._set_analysis_result_available(True)
             if hasattr(self, "txt_schedule_debug"):
@@ -1186,11 +1217,6 @@ class ExportTicketWindow(QMainWindow):
                 self._analysis_request_in_flight = 0
                 self._analysis_worker = None
 
-        def _restore_analyze_button():
-            self.btn_analyze.setEnabled(True)
-            self.btn_analyze.setText("分析当前排程")
-            self.btn_cancel_analysis.setVisible(False)
-
         def _cancel_analysis():
             self._analysis_request_in_flight = 0
             if getattr(self, "_analysis_worker", None) is not None:
@@ -1201,7 +1227,13 @@ class ExportTicketWindow(QMainWindow):
             self.status.showMessage("分析已取消", 4000)
             self._restore_analyze_button()
 
-        self.btn_cancel_analysis.clicked.disconnect()
+        previous_cancel_handler = getattr(self, "_analysis_cancel_handler", None)
+        if previous_cancel_handler is not None:
+            try:
+                self.btn_cancel_analysis.clicked.disconnect(previous_cancel_handler)
+            except (TypeError, RuntimeError):
+                pass
+        self._analysis_cancel_handler = _cancel_analysis
         self.btn_cancel_analysis.clicked.connect(_cancel_analysis)
 
         def _on_finished():
@@ -1965,13 +1997,95 @@ class ExportTicketWindow(QMainWindow):
     
     def _sim_car_rows(self):
         """将排程行按车辆聚合，并按开始时间排序。"""
+        rows = getattr(self, "last_schedule_rows", []) or []
+        source_id = id(rows)
+        if self._sim_car_rows_cache is not None and self._sim_car_rows_cache_source == source_id:
+            return self._sim_car_rows_cache
         grouped = {}
-        for row in getattr(self, "last_schedule_rows", []) or []:
+        for row in rows:
             key = self._sim_car_key(row)
             grouped.setdefault(key, []).append(row)
         for key in grouped:
             grouped[key].sort(key=lambda r: self._sim_row_start(r))
+        self._sim_car_rows_cache = grouped
+        self._sim_car_rows_cache_source = source_id
         return grouped
+
+    def _sim_event_cache_for_current_rows(self):
+        """预整理动画播放事件，减少每帧全量扫描。"""
+        rows = getattr(self, "last_schedule_rows", []) or []
+        source_id = id(rows)
+        if self._sim_event_cache is not None and self._sim_event_cache_source == source_id:
+            return self._sim_event_cache
+
+        processing_events = []
+        wait_events = []
+        transition_events = []
+        max_processing_span = 1.0
+        max_wait_span = 1.0
+        visual_move_window = 2.0
+        car_rows = self._sim_car_rows()
+
+        for row in rows:
+            start = self._sim_row_start(row)
+            svc_finish = self._sim_row_service_finish(row)
+            if svc_finish > start:
+                processing_events.append((start, svc_finish, row))
+                max_processing_span = max(max_processing_span, svc_finish - start)
+
+        for car_key, car_segments in car_rows.items():
+            for idx, seg in enumerate(car_segments):
+                next_seg = car_segments[idx + 1] if idx + 1 < len(car_segments) else None
+                wait_start = self._sim_row_service_finish(seg)
+                wait_end = self._sim_row_wait_end(seg, next_seg)
+                if wait_end > wait_start:
+                    wait_events.append((wait_start, wait_end, seg, next_seg, car_key))
+                    max_wait_span = max(max_wait_span, wait_end - wait_start)
+                if next_seg is not None:
+                    next_start = self._sim_row_start(next_seg)
+                    prev_finish = self._sim_row_service_finish(seg)
+                    if next_start >= prev_finish:
+                        transition_events.append((
+                            next_start,
+                            next_start + visual_move_window,
+                            car_key,
+                            seg,
+                            next_seg,
+                        ))
+
+        processing_events.sort(key=lambda item: item[0])
+        wait_events.sort(key=lambda item: item[0])
+        transition_events.sort(key=lambda item: item[0])
+        cache = {
+            "processing": processing_events,
+            "processing_starts": [item[0] for item in processing_events],
+            "max_processing_span": max_processing_span,
+            "waiting": wait_events,
+            "waiting_starts": [item[0] for item in wait_events],
+            "max_wait_span": max_wait_span,
+            "transitions": transition_events,
+            "transition_starts": [item[0] for item in transition_events],
+            "max_transition_span": visual_move_window,
+        }
+        self._sim_event_cache = cache
+        self._sim_event_cache_source = source_id
+        return cache
+
+    @staticmethod
+    def _active_cached_events(events, starts, current, max_span):
+        if not events:
+            return []
+        idx = bisect.bisect_right(starts, current + 1e-9)
+        lower_bound = current - max_span - 1e-9
+        active = []
+        for event_index in range(idx - 1, -1, -1):
+            event = events[event_index]
+            if event[0] < lower_bound:
+                break
+            if event[0] <= current < event[1]:
+                active.append(event)
+        active.reverse()
+        return active
 
     def _sim_station_names(self):
         """优先按岗位矩阵 seq 顺序提取岗位名。"""
@@ -2047,26 +2161,27 @@ class ExportTicketWindow(QMainWindow):
 
         current = float(getattr(self, "sim_time", 0.0) or 0.0)
 
-        active_rows = []
-        for row in rows:
-            start = self._sim_row_start(row)
-            svc_finish = self._sim_row_service_finish(row)
-            if start <= current < svc_finish:
-                active_rows.append((start, svc_finish, row))
+        event_cache = self._sim_event_cache_for_current_rows()
+        active_rows = [
+            (start, svc_finish, row)
+            for start, svc_finish, row in self._active_cached_events(
+                event_cache["processing"],
+                event_cache["processing_starts"],
+                current,
+                event_cache["max_processing_span"],
+            )
+        ]
 
         active_rows.sort(key=lambda x: (self._sim_row_station(x[2]), x[0]))
-        waiting_rows = []
-        car_rows = self._sim_car_rows()
-        for _, car_segments in car_rows.items():
-            if not car_segments:
-                continue
-            for idx, seg in enumerate(car_segments):
-                next_seg = car_segments[idx + 1] if idx + 1 < len(car_segments) else None
-                wait_start = self._sim_row_service_finish(seg)
-                wait_end = self._sim_row_wait_end(seg, next_seg)
-                if wait_start <= current < wait_end:
-                    waiting_rows.append((wait_start, wait_end, seg, next_seg))
-                    break
+        waiting_rows = [
+            (wait_start, wait_end, seg, next_seg)
+            for wait_start, wait_end, seg, next_seg, _car_key in self._active_cached_events(
+                event_cache["waiting"],
+                event_cache["waiting_starts"],
+                current,
+                event_cache["max_wait_span"],
+            )
+        ]
 
         waiting_rows.sort(key=lambda x: (self._sim_row_station(x[2]), x[0]))
 
@@ -4199,15 +4314,20 @@ class ExportTicketWindow(QMainWindow):
         if not hasattr(self, "sim_scene"):
             return
 
-        self.sim_scene.clear()
         rows = getattr(self, "last_schedule_rows", []) or []
         if not rows:
+            self._sim_static_signature = None
+            self._sim_dynamic_items = []
+            self.sim_scene.clear()
             self.sim_scene.addText("请先点击『分析当前排程』生成仿真数据。")
             return
 
         station_defs = self._sim_station_defs()
         station_names = [item["name"] for item in station_defs]
         if not station_names:
+            self._sim_static_signature = None
+            self._sim_dynamic_items = []
+            self.sim_scene.clear()
             self.sim_scene.addText("暂无岗位数据。")
             return
 
@@ -4267,14 +4387,47 @@ class ExportTicketWindow(QMainWindow):
         scene_w = max(view_w - 6, track_end_x + margin_x)
         scene_h = zone_top + zone_h + 14
 
-        self.sim_scene.addRect(
-            0,
-            0,
+        static_signature = (
+            tuple(
+                (
+                    item.get("seq"),
+                    item.get("name"),
+                    item.get("line_scope"),
+                    item.get("device_count"),
+                )
+                for item in station_defs
+            ),
+            view_w,
+            station_w,
+            station_gap,
+            slot_w,
+            slot_h,
             scene_w,
             scene_h,
-            QPen(QColor("#243244")),
-            QBrush(QColor("#243244")),
         )
+        redraw_static = self._sim_static_signature != static_signature
+
+        for item in list(getattr(self, "_sim_dynamic_items", []) or []):
+            try:
+                if item.scene() is self.sim_scene:
+                    self.sim_scene.removeItem(item)
+            except Exception:
+                pass
+        self._sim_dynamic_items = []
+
+        if redraw_static:
+            self.sim_scene.clear()
+            self._sim_static_signature = static_signature
+
+        if redraw_static:
+            self.sim_scene.addRect(
+                0,
+                0,
+                scene_w,
+                scene_h,
+                QPen(QColor("#243244")),
+                QBrush(QColor("#243244")),
+            )
 
         def _station_device_mode(station_info):
             scope = str(station_info.get("line_scope") or "").strip()
@@ -4462,15 +4615,16 @@ class ExportTicketWindow(QMainWindow):
             status_item.setPos(slot["x"] + 10, slot["y"] + max(8, (slot["h"] - 18) / 2))
 
         def _draw_slot_waiting_outline(slot):
-            self.sim_scene.addRect(
+            _remember_dynamic_item(self.sim_scene.addRect(
                 slot["x"],
                 slot["y"],
                 slot["w"],
                 slot["h"],
                 QPen(QColor("#f97316"), 2),
-            )
+            ))
 
         def _draw_overflow_badge(x, y, count):
+            before_items = set(self.sim_scene.items())
             badge_w = 52
             badge_h = 18
             self.sim_scene.addRect(
@@ -4484,6 +4638,7 @@ class ExportTicketWindow(QMainWindow):
             badge_item = self.sim_scene.addText(f"还有{count}台")
             badge_item.setDefaultTextColor(QColor("#334155"))
             badge_item.setPos(x + 4, y + 1)
+            _remember_new_dynamic_items(before_items)
 
         def _vehicle_block_label(row):
             car_type = str(
@@ -4525,8 +4680,10 @@ class ExportTicketWindow(QMainWindow):
             label_item.setTextWidth(slot["w"])
             label_item.setPos(slot["x"] + 2, max(zone_top + title_band_h - 2, slot["y"] - 15))
             label_item.setZValue(4)
+            _remember_dynamic_item(label_item)
 
         def _draw_vehicle_capsule(x, y, w, h, row, status, seconds_text, over_takt=False):
+            before_items = set(self.sim_scene.items())
             car_type = str(
                 self._sim_row_value(row, "car_type", "type", "vehicle_type", default="")
                 or ""
@@ -4615,10 +4772,12 @@ class ExportTicketWindow(QMainWindow):
             label_item.setTextWidth(max(40, w - 18))
             label_item.setPos(x + 12, y + max(3, (h - 17) / 2))
             label_item.setZValue(5)
+            _remember_new_dynamic_items(before_items)
 
         station_layout = _build_sim_track_layout()
-        _draw_track_headers()
-        _draw_lane_lines()
+        if redraw_static:
+            _draw_track_headers()
+            _draw_lane_lines()
 
         slot_rects = {}
         station_modes = {}
@@ -4628,7 +4787,8 @@ class ExportTicketWindow(QMainWindow):
             mode = _station_device_mode(station_info)
             station_modes[name] = mode
             layout_info = station_layout[name]
-            _draw_station_zone(station_info, layout_info)
+            if redraw_static:
+                _draw_station_zone(station_info, layout_info)
             slots = _line_slots(line_scope)
             slot_rects[name] = {}
             for line_label, enabled in slots:
@@ -4637,7 +4797,8 @@ class ExportTicketWindow(QMainWindow):
                 else:
                     slot = dict(layout_info[line_label])
                 slot["enabled"] = enabled
-                _draw_station_track_slot(slot, enabled)
+                if redraw_static:
+                    _draw_station_track_slot(slot, enabled)
                 slot_rects[name][line_label] = slot
 
         def _slot_for_row(row):
@@ -4678,6 +4839,21 @@ class ExportTicketWindow(QMainWindow):
                 "w": w,
                 "h": h,
             }
+
+        dynamic_items = []
+
+        def _remember_dynamic_item(item):
+            if item is not None:
+                dynamic_items.append(item)
+            return item
+
+        def _remember_new_dynamic_items(before_items):
+            try:
+                for item in self.sim_scene.items():
+                    if item not in before_items:
+                        dynamic_items.append(item)
+            except Exception:
+                pass
 
         def _smoothstep(value):
             value = max(0.0, min(1.0, value))
@@ -4739,81 +4915,81 @@ class ExportTicketWindow(QMainWindow):
         current = float(getattr(self, "sim_time", 0.0) or 0.0)
         vehicle_blocks = []
         visual_move_window = 2.0
-        car_rows = self._sim_car_rows()
+        event_cache = self._sim_event_cache_for_current_rows()
         transition_car_keys = set()
 
-        for car_key, car_segments in car_rows.items():
-            if not car_segments:
+        transition_events = self._active_cached_events(
+            event_cache["transitions"],
+            event_cache["transition_starts"],
+            current,
+            event_cache["max_transition_span"],
+        )
+        for move_start, move_end, car_key, prev_seg, next_seg in transition_events:
+            from_slot, _ = _slot_for_row(prev_seg)
+            to_slot, _ = _slot_for_row(next_seg)
+            if not from_slot or not to_slot:
                 continue
-            for idx in range(1, len(car_segments)):
-                prev_seg = car_segments[idx - 1]
-                next_seg = car_segments[idx]
-                next_start = self._sim_row_start(next_seg)
-                prev_finish = self._sim_row_service_finish(prev_seg)
-                if next_start < prev_finish:
-                    continue
-                if next_start <= current < next_start + visual_move_window:
-                    from_slot, _ = _slot_for_row(prev_seg)
-                    to_slot, _ = _slot_for_row(next_seg)
-                    if not from_slot or not to_slot:
-                        continue
-                    transition_car_keys.add(car_key)
-                    vehicle_blocks.append({
-                        "station": self._sim_row_station(next_seg),
-                        "line": _line_key(self._sim_row_line_no(next_seg)),
-                        "row": next_seg,
-                        "status": "移动",
-                        "seconds": f"剩余{max(0.0, next_start + visual_move_window - current):.1f}s",
-                        "over_takt": False,
-                        "order_time": next_start,
-                        "display_rect": _transition_rect(
-                            prev_seg,
-                            next_seg,
-                            from_slot,
-                            to_slot,
-                            next_start,
-                            next_start + visual_move_window,
-                        ),
-                    })
-                    break
+            transition_car_keys.add(car_key)
+            vehicle_blocks.append({
+                "station": self._sim_row_station(next_seg),
+                "line": _line_key(self._sim_row_line_no(next_seg)),
+                "row": next_seg,
+                "status": "移动",
+                "seconds": f"剩余{max(0.0, move_end - current):.1f}s",
+                "over_takt": False,
+                "order_time": move_start,
+                "display_rect": _transition_rect(
+                    prev_seg,
+                    next_seg,
+                    from_slot,
+                    to_slot,
+                    move_start,
+                    move_end,
+                ),
+            })
 
-        for row in rows:
+        processing_events = self._active_cached_events(
+            event_cache["processing"],
+            event_cache["processing_starts"],
+            current,
+            event_cache["max_processing_span"],
+        )
+        for start, svc_finish, row in processing_events:
             if self._sim_car_key(row) in transition_car_keys:
                 continue
-            start = self._sim_row_start(row)
-            svc_finish = self._sim_row_service_finish(row)
-            if start - 1e-9 <= current < svc_finish - 1e-9:
-                remain = max(0.0, svc_finish - current)
-                vehicle_blocks.append({
-                    "station": self._sim_row_station(row),
-                    "line": _line_key(self._sim_row_line_no(row)),
-                    "row": row,
-                    "status": "加工",
-                    "seconds": f"剩余{remain:.1f}s",
-                    "over_takt": False,
-                    "order_time": start,
-                })
+            remain = max(0.0, svc_finish - current)
+            vehicle_blocks.append({
+                "station": self._sim_row_station(row),
+                "line": _line_key(self._sim_row_line_no(row)),
+                "row": row,
+                "status": "加工",
+                "seconds": f"剩余{remain:.1f}s",
+                "over_takt": False,
+                "order_time": start,
+            })
 
-        for car_key, car_segments in car_rows.items():
+        waiting_events = self._active_cached_events(
+            event_cache["waiting"],
+            event_cache["waiting_starts"],
+            current,
+            event_cache["max_wait_span"],
+        )
+        seen_waiting_cars = set()
+        for wait_start, wait_end, seg, next_seg, car_key in waiting_events:
             if car_key in transition_car_keys:
                 continue
-            if not car_segments:
+            if car_key in seen_waiting_cars:
                 continue
-            for idx, seg in enumerate(car_segments):
-                next_seg = car_segments[idx + 1] if idx + 1 < len(car_segments) else None
-                wait_start = self._sim_row_service_finish(seg)
-                wait_end = self._sim_row_wait_end(seg, next_seg)
-                if wait_start <= current < wait_end:
-                    vehicle_blocks.append({
-                        "station": self._sim_row_station(seg),
-                        "line": _line_key(self._sim_row_line_no(seg)),
-                        "row": seg,
-                        "status": "等待",
-                        "seconds": self._sim_wait_label(seg, next_seg, current, wait_end, set()),
-                        "over_takt": False,
-                        "order_time": wait_start,
-                    })
-                    break
+            seen_waiting_cars.add(car_key)
+            vehicle_blocks.append({
+                "station": self._sim_row_station(seg),
+                "line": _line_key(self._sim_row_line_no(seg)),
+                "row": seg,
+                "status": "等待",
+                "seconds": self._sim_wait_label(seg, next_seg, current, wait_end, set()),
+                "over_takt": False,
+                "order_time": wait_start,
+            })
 
         shared_processing = {}
         for item in sorted(vehicle_blocks, key=lambda value: value["order_time"]):
@@ -4904,4 +5080,5 @@ class ExportTicketWindow(QMainWindow):
                 item.get("over_takt", False),
             )
 
+        self._sim_dynamic_items = dynamic_items
         self.sim_scene.setSceneRect(0, 0, scene_w, scene_h)

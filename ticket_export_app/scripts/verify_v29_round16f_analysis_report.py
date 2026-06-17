@@ -16,15 +16,32 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from openpyxl import load_workbook  # noqa: E402
+from PySide6.QtCore import QDeadlineTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from ui.export_ticket_window import ExportTicketWindow  # noqa: E402
 from utils.analysis_report import REPORT_SHEETS, write_analysis_report  # noqa: E402
+
+
+def _wait_analysis_finished(window: ExportTicketWindow, timeout_ms: int = 15000) -> None:
+    """Wait for the async analysis worker introduced in round 16K."""
+    app = QApplication.instance() or QApplication([])
+    deadline = QDeadlineTimer(timeout_ms)
+    while not deadline.hasExpired():
+        app.processEvents()
+        if (
+            getattr(window, "_analysis_request_in_flight", 0) == 0
+            and bool(getattr(window, "last_schedule_rows", None))
+            and bool(getattr(window, "last_analysis", None))
+        ):
+            return
+    raise TimeoutError("分析未在验证超时时间内完成")
 
 
 def _verify_quantity(window: ExportTicketWindow) -> dict:
     window.fill_sample()
     window.spn_target_takt.setValue(118)
     window.do_analyze()
+    _wait_analysis_finished(window)
     rows_identity = id(window.last_schedule_rows)
     rows_snapshot = list(window.last_schedule_rows)
     payload = window._build_analysis_report_payload()
@@ -62,6 +79,7 @@ def _verify_ratio(window: ExportTicketWindow) -> dict:
     window.spn_total_cars.setValue(60)
     window.spn_target_takt.setValue(58)
     window.do_analyze()
+    _wait_analysis_finished(window)
     payload = window._build_analysis_report_payload()
     output = Path("/tmp/M-Line排程分析报告_16F_比例.xlsx")
     write_analysis_report(output, payload)
