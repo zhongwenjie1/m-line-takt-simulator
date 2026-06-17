@@ -198,6 +198,7 @@ def _write_overview(workbook, payload, records):
         ("整体节拍", payload["overall_takt_text"], "第一台至最后一台的平均下线间隔", f"目标{payload['target_takt']:.1f}s/台"),
         ("累计实际等待", f"{payload['total_actual_wait']:.1f}s", "截止统计时点已发生的完工后等待累计", "明细I列求和；已进入下线时间，不能重复相加"),
         ("累计节拍外等待", f"{payload['total_excess_wait']:.1f}s", "截止统计时点实际等待中超过工程可接纳上限的部分", "明细J列求和；用于定位等待压力"),
+        ("首工程等待进入累计排队车辆", f"{payload.get('first_station_entry_queue_max', 0)}台", "目标节拍投放后，等待进入首工程的最大排队车辆数", "不计入工程完工后等待"),
     ]
     if payload["is_ratio_mode"]:
         overview_rows.extend([

@@ -390,6 +390,8 @@ class ExportTicketWindow(QMainWindow):
         self._sim_car_rows_cache_source = None
         self._sim_event_cache = None
         self._sim_event_cache_source = None
+        self._sim_entry_queue_cache = None
+        self._sim_entry_queue_cache_source = None
         self._sim_static_signature = None
         self._sim_dynamic_items = []
 
@@ -732,6 +734,8 @@ class ExportTicketWindow(QMainWindow):
         self._sim_car_rows_cache_source = None
         self._sim_event_cache = None
         self._sim_event_cache_source = None
+        self._sim_entry_queue_cache = None
+        self._sim_entry_queue_cache_source = None
         self._sim_static_signature = None
         for item in list(getattr(self, "_sim_dynamic_items", []) or []):
             try:
@@ -2086,6 +2090,58 @@ class ExportTicketWindow(QMainWindow):
                 active.append(event)
         active.reverse()
         return active
+
+    def _first_station_entry_queue_cache_for_current_rows(self):
+        """统计计划已投放但尚未进入首工程的车辆队列。"""
+        rows = getattr(self, "last_schedule_rows", []) or []
+        source_id = id(rows)
+        if self._sim_entry_queue_cache is not None and self._sim_entry_queue_cache_source == source_id:
+            return self._sim_entry_queue_cache
+
+        intervals = []
+        for _car_key, car_segments in self._sim_car_rows().items():
+            if not car_segments:
+                continue
+            first_segment = car_segments[0]
+            first_start = self._sim_row_start(first_segment)
+            launch_wait = max(0.0, self._sim_row_value(first_segment, "launch_wait", default=0.0))
+            planned_launch = max(0.0, first_start - launch_wait)
+            if first_start > planned_launch + 1e-9:
+                intervals.append((planned_launch, first_start, first_segment))
+
+        starts = sorted(item[0] for item in intervals)
+        ends = sorted(item[1] for item in intervals)
+        events = []
+        for planned_launch, first_start, _row in intervals:
+            events.append((planned_launch, 1))
+            events.append((first_start, -1))
+        events.sort(key=lambda item: (item[0], 0 if item[1] < 0 else 1))
+        active = 0
+        max_queue = 0
+        for _time_value, delta in events:
+            active += delta
+            if active > max_queue:
+                max_queue = active
+
+        cache = {
+            "intervals": intervals,
+            "starts": starts,
+            "ends": ends,
+            "max_queue": max_queue,
+        }
+        self._sim_entry_queue_cache = cache
+        self._sim_entry_queue_cache_source = source_id
+        return cache
+
+    def _first_station_entry_queue_count(self, current_time: float) -> int:
+        cache = self._first_station_entry_queue_cache_for_current_rows()
+        starts = cache.get("starts", [])
+        ends = cache.get("ends", [])
+        current = float(current_time or 0.0)
+        return max(0, bisect.bisect_right(starts, current + 1e-9) - bisect.bisect_right(ends, current + 1e-9))
+
+    def _max_first_station_entry_queue(self) -> int:
+        return int(self._first_station_entry_queue_cache_for_current_rows().get("max_queue", 0) or 0)
 
     def _sim_station_names(self):
         """优先按岗位矩阵 seq 顺序提取岗位名。"""
@@ -3970,6 +4026,7 @@ class ExportTicketWindow(QMainWindow):
                 for item in excess_station_items[:3]
             )
             risk_parts.insert(0, f"节拍外等待发生工程：{excess_station_text}")
+        max_entry_queue = self._max_first_station_entry_queue()
         risk_hint_text = "｜".join(risk_parts) if risk_parts else "暂无明显风险"
         cause_chain_items = realtime.get("cause_chain_summary", []) or []
 
@@ -4032,6 +4089,7 @@ class ExportTicketWindow(QMainWindow):
             "total_block_wait": actual_wait,
             "total_actual_wait": actual_wait,
             "total_excess_wait": excess_wait,
+            "first_station_entry_queue_max": max_entry_queue,
             "excess_wait_by_station": excess_station_items,
             "cause_chain_summary": cause_chain_items,
             "cause_chain_details": realtime.get("cause_chain_details", []),
@@ -4060,6 +4118,13 @@ class ExportTicketWindow(QMainWindow):
             f"<div style='font-size:11px;color:#334155;line-height:1.3;margin-top:2px;margin-bottom:0;'>"
             f"{result_scope_note}｜累计实际等待 {actual_wait_text}s"
             "</div>"
+            + (
+                f"<div style='font-size:11px;color:#475569;line-height:1.3;margin-top:3px;'>"
+                f"<span style='font-weight:700;color:#0f172a;'>首工程前最大排队：</span>{max_entry_queue}台"
+                "</div>"
+                if max_entry_queue > 0
+                else ""
+            )
             + (
                 f"<div style='font-size:11px;color:#475569;line-height:1.35;margin-top:3px;'>"
                 f"<span style='font-weight:700;color:#0f172a;'>主要等待位置：</span>{excess_station_text}"
@@ -4259,6 +4324,7 @@ class ExportTicketWindow(QMainWindow):
             "overall_takt_text": overall_takt_text,
             "total_actual_wait": float(model_summary.get("total_actual_wait", 0.0) or 0.0),
             "total_excess_wait": float(model_summary.get("total_excess_wait", 0.0) or 0.0),
+            "first_station_entry_queue_max": int(model_summary.get("first_station_entry_queue_max", 0) or 0),
             "excess_station_text": excess_station_text,
             "capacity_station_text": "｜".join(capacity_parts),
             "cause_chain_details": list(model_summary.get("cause_chain_details", []) or []),
@@ -4855,6 +4921,34 @@ class ExportTicketWindow(QMainWindow):
             except Exception:
                 pass
 
+        def _draw_entry_queue_badge(count):
+            if count <= 0:
+                return
+            before_items = set(self.sim_scene.items())
+            text = f"等待进入：{count}台"
+            badge_w = 116
+            badge_h = 24
+            badge_x = 10
+            badge_y = 6
+            badge_rect = self.sim_scene.addRect(
+                badge_x,
+                badge_y,
+                badge_w,
+                badge_h,
+                QPen(QColor("#38bdf8"), 1),
+                QBrush(QColor(15, 23, 42, 210)),
+            )
+            badge_rect.setZValue(20)
+            text_item = self.sim_scene.addText(text)
+            badge_font = QFont()
+            badge_font.setPointSize(10)
+            badge_font.setBold(True)
+            text_item.setFont(badge_font)
+            text_item.setDefaultTextColor(QColor("#e0f2fe"))
+            text_item.setPos(badge_x + 8, badge_y + 2)
+            text_item.setZValue(20)
+            _remember_new_dynamic_items(before_items)
+
         def _smoothstep(value):
             value = max(0.0, min(1.0, value))
             return value * value * (3 - 2 * value)
@@ -5080,5 +5174,6 @@ class ExportTicketWindow(QMainWindow):
                 item.get("over_takt", False),
             )
 
+        _draw_entry_queue_badge(self._first_station_entry_queue_count(current))
         self._sim_dynamic_items = dynamic_items
         self.sim_scene.setSceneRect(0, 0, scene_w, scene_h)
